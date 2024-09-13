@@ -1,0 +1,27 @@
+{
+	"license": "GPL-3.0-only",
+	"devDependencies": {
+		"@eslint/js": "^9.9.1",
+		"@stylistic/eslint-plugin": "^2.6.4",
+		"@types/better-sqlite3": "^7.6.11",
+		"@types/eslint__js": "^8.42.3",
+		"@types/node": "^18.17.1",
+		"@types/ws": "^8.5.4",
+		"eslint": "^8.57.0",
+		"typescript": "^5.5.4",
+		"typescript-eslint": "^8.3.0"
+	},
+	"dependencies": {
+		"better-sqlite3": "^11.1.2",
+		"erlpack": "^0.1.4",
+		"undici": "^5.19.1",
+		"ws": "^8.12.1",
+		"zlib-sync": "^0.1.8"
+	},
+	"scripts": {
+		"build": "tsc",
+		"lint": "eslint ./src/",
+		"lint-fix": "eslint --fix ./src/"
+	},
+	"type": "module"
+}
