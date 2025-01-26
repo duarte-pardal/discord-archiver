@@ -652,7 +652,11 @@ type ThreadChannelFields = {
 	last_message_id?: string | null;
 	/** ID of the channel this thread was created from */
 	parent_id: string;
-	/** Number of messages (not including the initial message or deleted messages) in a thread */
+	/**
+	 * Number of messages (not including the initial message or deleted messages) in a thread
+	 *
+	 * For threads created before July 1, 2022, it's inaccurate when it's greater than 50.
+	 */
 	message_count?: number;
 	/** An approximate count of users in a thread, stops counting at 50 */
 	member_count?: number;

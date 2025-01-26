@@ -392,5 +392,20 @@ CREATE TABLE reaction_emojis (
 	animated INTEGER NOT NULL
 );
 
+-- Contains information about downloaded files. These may include attachments, profile pictures
+-- and embedded media from external sites.
+CREATE TABLE files (
+	url TEXT NOT NULL PRIMARY KEY,
+	-- content_hash may only be NULL if error_code is not NULL.
+	content_hash BLOB,
+	-- error_code is NULL: no error
+	-- error_code >= 0: normal HTTP error, error_code is the HTTP status code
+	-- error_code == -1: malformed HTTP response
+	--
+	-- Normal HTTP errors often happen when an URL inside of an embed points to content which has
+	-- since been removed.
+	error_code INTEGER
+);
+CREATE INDEX files_by_hash ON files (content_hash) WHERE content_hash IS NOT NULL;
 
 COMMIT;

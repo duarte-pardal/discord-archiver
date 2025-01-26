@@ -38,6 +38,8 @@ export const enum RequestType {
 	AddReactionPlacement,
 	MarkReactionAsRemoved,
 	MarkReactionsAsRemovedBulk,
+	GetFileHashUtilization,
+	AddFile,
 	GetLastMessageID,
 	GetGuilds,
 	GetDMChannels,
@@ -156,6 +158,23 @@ export type MarkReactionAsRemovedBulkRequest = {
 	emoji: DT.PartialEmoji | null;
 	timing: Timing;
 };
+export type GetFileHashUtilizationRequest = {
+	type: RequestType.GetFileHashUtilization;
+	hash: Uint8Array;
+};
+export type AddFileRequest = {
+	type: RequestType.AddFile;
+	url: string;
+} & (
+	{
+		errorCode: number;
+		hash: null;
+	} |
+	{
+		errorCode: null;
+		hash: Uint8Array;
+	}
+);
 export type GetLastMessageIDRequest = {
 	type: RequestType.GetLastMessageID;
 	channelID: string;
@@ -204,6 +223,8 @@ export type SingleRequest =
 	AddReactionPlacementRequest |
 	MarkReactionAsRemovedRequest |
 	MarkReactionAsRemovedBulkRequest |
+	GetFileHashUtilizationRequest |
+	AddFileRequest |
 	GetLastMessageIDRequest |
 	CountChannelMessagesRequest;
 export type IteratorRequest =
@@ -232,6 +253,8 @@ export type ResponseFor<R extends SingleRequest> =
 	R extends AddReactionPlacementRequest ? void :
 	R extends MarkReactionAsRemovedRequest ? void :
 	R extends MarkReactionAsRemovedBulkRequest ? void :
+	R extends AddFileRequest ? boolean :
+	R extends GetFileHashUtilizationRequest ? boolean :
 	R extends GetLastMessageIDRequest ? bigint | null :
 	R extends CountChannelMessagesRequest ? bigint | null :
 	never;

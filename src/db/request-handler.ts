@@ -141,6 +141,9 @@ SELECT id FROM latest_${objectName}_snapshots WHERE ${parentIDName} IS :$parentI
 		markReactionsAsRemovedByMessageAndEmoji: db.prepare("UPDATE reactions SET end = :end WHERE message_id IS :message_id AND emoji IS :emoji AND end IS NULL;"),
 		checkForReaction: db.prepare("SELECT 1 FROM reactions WHERE message_id IS :message_id AND emoji IS :emoji AND type IS :type AND user_id IS :user_id AND end IS NULL;"),
 
+		findFileByHash: db.prepare("SELECT url FROM files WHERE content_hash IS :content_hash;"),
+		addFile: db.prepare("INSERT OR IGNORE INTO files (url, content_hash, error_code) VALUES (:url, :content_hash, :error_code);"),
+
 		getLastMessageID: db.prepare("SELECT max(id) FROM latest_message_snapshots WHERE channel_id = :channel_id;"),
 	} as const;
 	const objectStatements = {
@@ -498,15 +501,6 @@ WHERE message_fts_index MATCH :$query;
 				}
 
 				for (const attachment of req.message.attachments) {
-					const path = `/attachments/${
-						(req.message.flags ?? 0) & DT.MessageFlags.IsCrosspost ? req.message.message_reference?.channel_id : req.message.channel_id
-					}/${attachment.id}/${attachment.filename}`;
-					if (
-						attachment.url.slice(0, attachment.url.indexOf("?")) !== `https://cdn.discordapp.com${path}` ||
-						attachment.proxy_url.slice(0, attachment.proxy_url.indexOf("?")) !== `https://media.discordapp.net${path}`
-					) {
-						log?.warning?.("The attachment URLs differ from the expected.\nurl: %o\nproxy_url: %o\nexpected path: %o\n", attachment.url, attachment.proxy_url, path);
-					}
 					const encoded = encodeObject(ObjectType.Attachment, attachment);
 					encoded._message_id = req.message.id;
 					statements.addAttachment.run(encoded);
@@ -589,6 +583,21 @@ WHERE message_fts_index MATCH :$query;
 						end: encodeTiming(req.timing),
 					});
 				}
+				break;
+			}
+
+			case RequestType.GetFileHashUtilization: {
+				response = statements.findFileByHash.get({
+					content_hash: req.hash,
+				}) != undefined;
+				break;
+			}
+			case RequestType.AddFile: {
+				statements.addFile.run({
+					url: req.url,
+					content_hash: req.hash,
+					error_code: req.errorCode,
+				});
 				break;
 			}
 

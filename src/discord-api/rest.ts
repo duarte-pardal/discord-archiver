@@ -1,6 +1,6 @@
-import { fetch, Headers, Request, RequestInit, Response } from "undici";
 import { abortError } from "../util/abort.js";
 import { extendAbortSignal, timeout } from "../util/abort.js";
+import { isFetchAbortError } from "../util/http.js";
 import log from "../util/log.js";
 
 // Yes, I'm aware that the latest version is 10. I'm using v9 because it's what the stable Discord
@@ -18,29 +18,11 @@ export class DiscordAPIError extends Error {
 	}
 }
 
-export function mergeOptions(target: RequestInit, source: RequestInit): RequestInit {
-	const output = Object.assign(Object.assign({}, target), source);
-	const sourceHeaders = source.headers ? new Headers(source.headers) : undefined;
-	if (sourceHeaders) {
-		const headers = target.headers ? new Headers(target.headers) : new Headers();
-		sourceHeaders.forEach((v, k) => {
-			headers.set(k, v);
-		});
-		output.headers = headers;
-	}
-	return output;
-}
-
 export type RequestResult<T> = {
 	response: Response;
 	data: T | undefined;
 	rateLimitReset: Promise<void> | undefined;
 };
-
-function isFetchAbortError(err: unknown): boolean {
-	// For some reason, undici sometimes throws abort events instead of errors.
-	return (err instanceof DOMException && err.name === "AbortError") || (err instanceof Event && err.type === "abort");
-}
 
 export async function apiReq<T>(endpoint: string, options?: RequestInit, abortIfFail = false): Promise<RequestResult<T>> {
 	log.debug?.(
@@ -77,7 +59,7 @@ export async function apiReq<T>(endpoint: string, options?: RequestInit, abortIf
 				} catch {}
 				interval = retryAfter ?? Math.max(interval, 2_000);
 			} else if (response.status >= 500 && response.status < 600) {
-				log.warning?.(`Got unexpected server error (HTTP ${response.status} ${response.statusText}) while requesting ${request.method} ${request.url}.`);
+				log.warning?.(`Got unexpected server error (HTTP ${response.status} ${response.statusText}) while requesting ${request.method} ${request.url}. Retrying.`);
 			} else {
 				const rateLimitReset =
 					!response.headers.has("X-RateLimit-Remaining") ? undefined :
@@ -94,25 +76,23 @@ export async function apiReq<T>(endpoint: string, options?: RequestInit, abortIf
 						log.debug?.(`Got response from ${endpoint}: ${response.status} ${response.statusText} %o %o`, response.headers, data);
 					}
 				}
-				done();
 				return { response, data, rateLimitReset };
 			}
 		} catch (err) {
 			if (isFetchAbortError(err)) {
-				done();
 				throw abortError;
-			}
-			if (err instanceof TypeError) {
+			} else if (err instanceof TypeError) {
 				log.warning?.(`Network error while requesting ${request.method} ${request.url}: ${err.message}`);
 			} else {
-				done();
 				throw err;
 			}
+		} finally {
+			done();
 		}
 		if (controller.signal.aborted) {
 			throw abortError;
 		}
 		await timeout(interval, options?.signal);
-		interval = Math.max(interval + 2_000, 60_000);
+		interval = Math.min(interval + 2_000, 60_000);
 	}
 }

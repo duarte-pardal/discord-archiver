@@ -10,7 +10,7 @@ process.on("uncaughtExceptionMonitor", () => {
 import * as DT from "../discord-api/types.js";
 import { AddSnapshotResult, getDatabaseConnection, RequestType } from "../db/index.js";
 import { GatewayConnection } from "../discord-api/gateway/connection.js";
-import { apiReq, mergeOptions, RequestResult } from "../discord-api/rest.js";
+import { apiReq, RequestResult } from "../discord-api/rest.js";
 import { computeChannelPermissions, computeGuildPermissions, hasChannelPermissions } from "./permissions.js";
 import { setProgress } from "../util/progress-display.js";
 import { areMapsEqual } from "../util/map-equality.js";
@@ -19,10 +19,14 @@ import { parseArgs, ParseArgsConfig } from "node:util";
 import log from "../util/log.js";
 import { getTag } from "../discord-api/tag.js";
 import { RateLimiter } from "../util/rate-limiter.js";
-import { RequestInit } from "undici";
 import { CachedChannel, CachedChannelWithSyncInfo, CachedGuild, createCachedChannel, extractThreadInfo, guilds, isChannelCacheable, ThreadInfo } from "./cache.js";
 import { Account, AccountOptions, accounts, getLeastGatewayOccupiedAccount, getLeastRESTOccupiedAccount } from "./accounts.js";
 import { ArchivedThreadSyncProgress, downloadProgresses, MessageSyncProgress, progressCounts, startProgressDisplay, stopProgressDisplay, updateProgressOutput } from "./progress.js";
+import { closeFileStore, downloadFile, openFileStore, PendingFileInfo, settleFile } from "./files.js";
+import { mergeOptions } from "../util/http.js";
+import { ConcurrencyLimiter } from "../util/concurrency-limiter.js";
+import { promiseWithResolvers } from "../util/promise.js";
+import { mapIterator } from "../util/iterators.js";
 
 const args = {
 	strict: true,
@@ -41,6 +45,9 @@ const args = {
 		"sync-sqlite": {
 			type: "boolean",
 		},
+		"file-store-path": {
+			type: "string",
+		},
 		guild: {
 			type: "string",
 			multiple: true,
@@ -49,6 +56,9 @@ const args = {
 			type: "boolean",
 		},
 		"no-reactions": {
+			type: "boolean",
+		},
+		"no-files": {
 			type: "boolean",
 		},
 	},
@@ -89,6 +99,8 @@ if (stats) {
 	startProgressDisplay();
 }
 
+const fileStorePath = options["file-store-path"] ?? `${positionals[0]}-files`;
+
 const dbOpenTimestamp = Date.now();
 const db = await getDatabaseConnection(positionals[0], options["sync-sqlite"] ?? false);
 db.ready.then(() => {
@@ -102,7 +114,11 @@ let allReady = false;
 
 // SYNCING
 
-// TODO: Handle errors that happen while parsing data returned from Discord
+const fileDownloadLimiter = new ConcurrencyLimiter(8);
+
+
+// TODO: This can be optimized. We don't need to wait for all reactions/files from the previous
+// message to be downloaded to start downloading the ones from the next message.
 export async function syncMessages(account: Account, channel: CachedChannel | ThreadInfo): Promise<void> {
 	const lastMessageID = channel.syncInfo?.lastMessageID;
 	const parentChannel = channel.parent ?? channel;
@@ -111,7 +127,8 @@ export async function syncMessages(account: Account, channel: CachedChannel | Th
 	const restOptions = mergeOptions(account.restOptions, { signal: abortController.signal });
 
 	// Add this operation to the ongoing syncs list
-	const sync = { abortController, channel };
+	const { promise: end, resolve: endOperation } = promiseWithResolvers<void>();
+	const sync = { abortController, end, channel };
 	const ongoingSyncs = channel.parent !== null && channel.private ?
 		account.ongoingPrivateThreadMessageSyncs :
 		account.ongoingMessageSyncs;
@@ -168,8 +185,9 @@ export async function syncMessages(account: Account, channel: CachedChannel | Th
 				if (messages.length > 0) {
 					// Messages must be added from oldest to newest so that the program can detect
 					// which messages need to be archived solely based on the ID of the last archived message.
-					// Every message with reactions is added on it own transaction. Messages without
-					// reactions are grouped together in a single transaction to improve performance.
+					// Every message with reactions or downloadable files is added on its own transaction.
+					// The other messages (simple messages) are grouped together in a single transaction to
+					// improve performance.
 
 					firstMessageIDNum ??= Number.parseInt(messages.at(-1)!.id);
 					messageID = messages[0].id;
@@ -177,12 +195,12 @@ export async function syncMessages(account: Account, channel: CachedChannel | Th
 					let lastMessageAddPromise: Promise<AddSnapshotResult>;
 					let rateLimitReset: Promise<void> | undefined;
 					let i: number;
-					let startMWRIndex: number = messages.length - 1;
+					let simpleMessagesStartIndex: number = messages.length - 1;
 
-					function flushMessagesWithoutReactions() {
-						if (startMWRIndex === i) return;
+					function flushSimpleMessages() {
+						if (simpleMessagesStartIndex === i) return;
 						// Since the message array is iterated in reverse, startIndex > endIndex.
-						const startIndex = startMWRIndex; // inclusive
+						const startIndex = simpleMessagesStartIndex; // inclusive
 						const endIndex = i; // exclusive
 						updateProgress(messages[endIndex + 1].id, startIndex - endIndex);
 						db.transaction(async () => {
@@ -197,9 +215,12 @@ export async function syncMessages(account: Account, channel: CachedChannel | Th
 
 					for (i = messages.length - 1; i >= 0; i--) {
 						const message = messages[i];
-						if (!options["no-reactions"] && message.reactions !== undefined && message.reactions.length !== 0) {
-							flushMessagesWithoutReactions();
-							startMWRIndex = i - 1;
+						if (
+							(!options["no-reactions"] && message.reactions !== undefined && message.reactions.length !== 0) ||
+							(!options["no-files"] && message.attachments.length > 0)
+						) {
+							flushSimpleMessages();
+							simpleMessagesStartIndex = i - 1;
 
 							const reactions: {
 								emoji: DT.PartialEmoji;
@@ -207,7 +228,7 @@ export async function syncMessages(account: Account, channel: CachedChannel | Th
 								userIDs: string[];
 							}[] = [];
 
-							for (const reaction of message.reactions) {
+							for (const reaction of message.reactions ?? []) {
 								for (const [reactionType, expectedCount] of [
 									...(reaction.count_details.normal > 0 ? [[0, reaction.count_details.normal]] : []),
 									...(reaction.count_details.burst > 0 ? [[1, reaction.count_details.burst]] : []),
@@ -255,6 +276,41 @@ export async function syncMessages(account: Account, channel: CachedChannel | Th
 								}
 							}
 
+							let files: PendingFileInfo[];
+							try {
+								files = await Promise.all(message.attachments.map((attachment) => {
+									if (log.warning) {
+										// Verify if the URL matches what's expected
+										function stripQuery(url: string) {
+											const i = url.indexOf("?");
+											return i === -1 ? url : url.slice(0, i);
+										}
+										const path = `/attachments/${
+											(message.flags ?? 0) & DT.MessageFlags.IsCrosspost ? message.message_reference?.channel_id : message.channel_id
+										}/${attachment.id}/${attachment.filename}`;
+										if (
+											stripQuery(attachment.url) !== `https://cdn.discordapp.com${path}` ||
+											stripQuery(attachment.proxy_url) !== `https://media.discordapp.net${path}`
+										) {
+											log.warning("WARNING: The attachment URLs differ from the expected.\nurl: %o\nproxy_url: %o\nexpected path: %o\n", attachment.url, attachment.proxy_url, path);
+										}
+									}
+
+									return fileDownloadLimiter.runWhenFree(() => downloadFile(fileStorePath, attachment.url, abortController.signal));
+								}));
+							} catch (err) {
+								if (err !== abortError) {
+									if ((err as { code?: unknown }).code === "ENOSPC") {
+										log.warning?.("Error while downloading a file due to lack of storage space.");
+									} else {
+										log.warning?.("Error while downloading file: %o", err);
+									}
+								}
+								throw abortError;
+							}
+
+							if (abortController.signal.aborted as boolean) throw abortError;
+
 							db.transaction(async () => {
 								lastMessageAddPromise = db.request({
 									type: RequestType.AddMessageSnapshot,
@@ -270,12 +326,36 @@ export async function syncMessages(account: Account, channel: CachedChannel | Th
 										timing: null,
 									});
 								}
+								for (const fileInfo of files) {
+									if (fileInfo.errorStatusCode !== null) {
+										db.request({
+											type: RequestType.AddFile,
+											url: fileInfo.url,
+											errorCode: fileInfo.errorStatusCode,
+											hash: null,
+										});
+									} else {
+										db.request({
+											type: RequestType.AddFile,
+											url: fileInfo.url,
+											errorCode: null,
+											hash: fileInfo.hash,
+										});
+									}
+								}
 							});
+
+							// Move the new unique files to the main directory
+							for (const fileInfo of files) {
+								if (fileInfo.errorStatusCode === null && fileInfo.temporaryPath !== null) {
+									settleFile(fileStorePath, fileInfo.temporaryPath, fileInfo.hash);
+								}
+							}
 
 							updateProgress(message.id, 1);
 						}
 					}
-					flushMessagesWithoutReactions();
+					flushSimpleMessages();
 
 					// Since there is at least 1 message, the promise variable will always be defined
 					const done = await lastMessageAddPromise! !== AddSnapshotResult.AddedFirstSnapshot;
@@ -317,6 +397,7 @@ export async function syncMessages(account: Account, channel: CachedChannel | Th
 		ongoingSyncs.delete(parentChannel);
 	}
 	account.numberOfOngoingRESTOperations--;
+	endOperation();
 }
 
 export function syncMessagesIfNotSyncing(account: Account, channel: CachedChannel | ThreadInfo): Promise<void> {
@@ -350,12 +431,12 @@ async function syncAllArchivedThreads(account: Account, channel: CachedChannel, 
 	const abortController = new AbortController();
 	const restOptions = mergeOptions(account.restOptions, { signal: abortController.signal });
 
+	const { promise: end, resolve: endOperation } = promiseWithResolvers<void>();
 	const ongoingMap =
 		type === ArchivedThreadListType.Public ? account.ongoingPublicThreadListSyncs :
 		type === ArchivedThreadListType.Private ? account.ongoingPrivateThreadListSyncs :
 		account.ongoingJoinedPrivateThreadListSyncs;
-
-	ongoingMap.set(channel, { abortController });
+	ongoingMap.set(channel, { abortController, end });
 
 	let threadID = "";
 	while (true) {
@@ -421,6 +502,7 @@ async function syncAllArchivedThreads(account: Account, channel: CachedChannel, 
 
 	ongoingMap.delete(channel);
 	account.numberOfOngoingRESTOperations--;
+	endOperation();
 
 	progressCounts.threadEnumerations--;
 	downloadProgresses.delete(progress);
@@ -1139,45 +1221,54 @@ function connectAccount(options: AccountOptions): Promise<void> {
 	});
 }
 
-function disconnectAccount(account: Account) {
+async function disconnectAccount(account: Account) {
 	account.gatewayConnection.destroy();
+	accounts.delete(account);
+
+	const endPromises = [];
 	for (const set of account.ongoingMessageSyncs.values()) {
-		for (const { abortController } of set.values()) {
+		for (const { abortController, end } of set.values()) {
+			endPromises.push(end);
 			abortController.abort();
 		}
 	}
 	for (const set of account.ongoingPrivateThreadMessageSyncs.values()) {
-		for (const { abortController } of set.values()) {
+		for (const { abortController, end } of set.values()) {
+			endPromises.push(end);
 			abortController.abort();
 		}
 	}
-	for (const { abortController } of account.ongoingPublicThreadListSyncs.values()) {
+	for (const { abortController, end } of account.ongoingPublicThreadListSyncs.values()) {
+		endPromises.push(end);
 		abortController.abort();
 	}
-	for (const { abortController } of account.ongoingPrivateThreadListSyncs.values()) {
+	for (const { abortController, end } of account.ongoingPrivateThreadListSyncs.values()) {
+		endPromises.push(end);
 		abortController.abort();
 	}
-	for (const { abortController } of account.ongoingJoinedPrivateThreadListSyncs.values()) {
+	for (const { abortController, end } of account.ongoingJoinedPrivateThreadListSyncs.values()) {
+		endPromises.push(end);
 		abortController.abort();
 	}
-	accounts.delete(account);
+	await Promise.all(endPromises);
 }
 
 // Cleanup
-function stop() {
+async function stop() {
 	stopProgressDisplay();
 	log.info?.("Exiting.");
 	globalAbortController.abort();
-	for (const account of accounts) {
-		disconnectAccount(account);
-	}
+	await Promise.all(mapIterator(accounts.values(), account => disconnectAccount(account)));
 	db.close();
+	await closeFileStore(fileStorePath);
 }
 
 process.once("SIGINT", stop);
 process.once("SIGTERM", stop);
 
 if (!globalAbortSignal.aborted) {
+	await openFileStore(fileStorePath, db);
+
 	// Connect to all accounts
 	Promise.all(options.token.map((token, index) => connectAccount({
 		name: `account #${index}`,

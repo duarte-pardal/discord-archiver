@@ -101,7 +101,7 @@ You can read the raw data from the database using the SQLite CLI or any SQLite d
     - **Import user account settings from HAR**
   - **Archive custom emojis**
   - **Archive DM channels**
-  - **Download attachments**
+  - **Download files other than attachments**
   - **Allow thread enumeration to be interrupted**
   - **Fix switching accounts on permission changes (or remove multi-account support)**
   - **Archive private threads without manage permission**

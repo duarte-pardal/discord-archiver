@@ -1,10 +1,10 @@
-import { RequestInit } from "undici";
 import { GatewayConnection, GatewayTypes } from "../discord-api/gateway/connection.js";
 import { CachedChannel, CachedGuild, ThreadInfo } from "./cache.js";
 import { RequestResult } from "../discord-api/rest.js";
 
 export type OngoingOperation = {
 	abortController: AbortController;
+	end: Promise<void>;
 };
 export type OngoingMessageSync = OngoingOperation & {
 	channel: CachedChannel | ThreadInfo;

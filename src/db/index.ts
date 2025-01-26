@@ -219,10 +219,12 @@ class SyncDatabaseConnection implements BaseDatabaseConnection {
 	}
 }
 
+export type DatabaseConnection = AsyncDatabaseConnection | SyncDatabaseConnection;
+
 export async function getDatabaseConnection(path: string, synchronous?: false): Promise<AsyncDatabaseConnection>;
 export async function getDatabaseConnection(path: string, synchronous: true): Promise<SyncDatabaseConnection>;
-export async function getDatabaseConnection(path: string, synchronous: boolean): Promise<AsyncDatabaseConnection>;
-export async function getDatabaseConnection(path: string, synchronous = false): Promise<AsyncDatabaseConnection | SyncDatabaseConnection> {
+export async function getDatabaseConnection(path: string, synchronous: boolean): Promise<DatabaseConnection>;
+export async function getDatabaseConnection(path: string, synchronous = false): Promise<DatabaseConnection> {
 	if (synchronous) {
 		const requestHandler = (await import("./request-handler.js")).getRequestHandler({
 			path,
