@@ -165,9 +165,15 @@ class AsyncDatabaseConnection implements BaseDatabaseConnection {
 	transaction<T>(callback: () => Promise<T>): Promise<T> {
 		return this.#transactionLimiter.runWhenFree(async () => {
 			this.request({ type: RequestType.BeginTransaction });
-			const ret = await callback();
-			this.request({ type: RequestType.CommitTransaction });
-			return ret;
+			try {
+				const ret = await callback();
+				this.request({ type: RequestType.CommitTransaction });
+				return ret;
+			} catch (err) {
+				// TODO: Rollback instead
+				this.request({ type: RequestType.CommitTransaction });
+				throw err;
+			}
 		});
 	}
 

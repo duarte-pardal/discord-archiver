@@ -218,7 +218,7 @@ export const enum MessageReferenceType {
 }
 
 export type MessageReference = {
-	/** type of reference */
+	/** Type of reference */
 	type: MessageReferenceType;
 	/** ID of the originating message */
 	message_id: string;
@@ -226,6 +226,97 @@ export type MessageReference = {
 	channel_id: string;
 	/** ID of the originating message's guild */
 	guild_id: string;
+};
+
+export type Embed = {
+	/** Title of embed */
+	title?: string;
+	/** Type of embed (always "rich" for webhook embeds) */
+	type?:
+		"rich" |
+		"image" |
+		"video" |
+		"gifv" |
+		"article" |
+		"link" |
+		"poll_result";
+	/** Description of embed */
+	description?: string;
+	/** URL of embed */
+	url?: string;
+	/** Timestamp of embed content */
+	timestamp?: string;
+	/** Color code of the embed */
+	color?: string;
+	/** Footer information */
+	footer?: {
+		/** Footer text */
+		text: string;
+		/** URL of footer icon */
+		icon_url?: string;
+		/** A proxied URL of footer icon */
+		proxy_icon_url?: string;
+	};
+	/** Image information */
+	image?: {
+		/** Source URL of image */
+		url: string;
+		/** A proxied URL of the image */
+		proxy_url?: string;
+		/** Height of image */
+		height: string;
+		/** Width of image */
+		width: string;
+	};
+	/** Thumbnail information */
+	thumbnail?: {
+		/** Source URL of thumbnail */
+		url: string;
+		/** A proxied URL of the thumbnail */
+		proxy_url?: string;
+		/** Height of thumbnail */
+		height: string;
+		/** Width of thumbnail */
+		width: string;
+	};
+	/** Video information */
+	video?: {
+		/** Source URL of video */
+		url?: string;
+		/** A proxied URL of the video */
+		proxy_url?: string;
+		/** Height of video */
+		height: string;
+		/** Width of video */
+		width: string;
+	};
+	/** Provider information */
+	provider?: {
+		/** Name of provider */
+		name?: string;
+		/** URL of provider */
+		url?: string;
+	};
+	/** Author information */
+	author?: {
+		/** Name of author */
+		name: string;
+		/** URL of author */
+		url?: string;
+		/** URL of author icon */
+		icon_url?: string;
+		/** A proxied URL of author icon */
+		proxy_icon_url?: string;
+	};
+	/** Fields information, max of 25 */
+	fields?: {
+		/** Name of the field */
+		name: string;
+		/** Value of the field */
+		value: string;
+		/** Whether or not this field should display inline */
+		inline?: boolean;
+	};
 };
 
 type MessageBase = {
@@ -250,7 +341,7 @@ type MessageBase = {
 	/** Any attached files */
 	attachments: Attachment[];
 	/** Any embedded content */
-	embeds: unknown[];
+	embeds: Embed[];
 	/** Reactions to the message */
 	reactions?: Reaction[];
 	/** Whether this message is pinned */

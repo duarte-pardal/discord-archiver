@@ -82,7 +82,7 @@ export function getRequestHandler({ path, log }: { path: string; log?: typeof im
 SELECT 1 FROM latest_${objectName}_snapshots WHERE id = :id;
 `),
 			getLatestSnapshot: db.prepare(`\
-SELECT id, _deleted, ${ok} _timestamp, ${sk} FROM latest_${objectName}_snapshots WHERE id = :id OR :$getAll = 1;
+SELECT id, _deleted, ${ok} _timestamp, ${sk} FROM latest_${objectName}_snapshots WHERE :$getAll = 1 OR id = :id;
 `),
 			isLatestSnapshotEqual: db.prepare(`\
 SELECT 1 FROM latest_${objectName}_snapshots WHERE id = :id AND ${snapshotKeys.map(k => `${k} IS :${k}`).join(" AND ")};
@@ -141,6 +141,7 @@ SELECT id FROM latest_${objectName}_snapshots WHERE ${parentIDName} IS :$parentI
 		markReactionsAsRemovedByMessageAndEmoji: db.prepare("UPDATE reactions SET end = :end WHERE message_id IS :message_id AND emoji IS :emoji AND end IS NULL;"),
 		checkForReaction: db.prepare("SELECT 1 FROM reactions WHERE message_id IS :message_id AND emoji IS :emoji AND type IS :type AND user_id IS :user_id AND end IS NULL;"),
 
+		getFile: db.prepare("SELECT url, content_hash, error_code FROM files WHERE :$getAll = 1 OR url IS :url;"),
 		findFileByHash: db.prepare("SELECT url FROM files WHERE content_hash IS :content_hash;"),
 		addFile: db.prepare("INSERT OR IGNORE INTO files (url, content_hash, error_code) VALUES (:url, :content_hash, :error_code);"),
 
@@ -189,7 +190,7 @@ webhook_id, username, avatar
 FROM latest_message_snapshots
 LEFT JOIN webhook_users
 ON latest_message_snapshots.author__id < ${SNOWFLAKE_LOWER_BOUND} AND webhook_users.internal_id = latest_message_snapshots.author__id
-WHERE channel_id = :$parentID OR :$getAll = 1;
+WHERE :$getAll = 1 OR channel_id = :$parentID;
 `),
 			search: db.prepare(`\
 SELECT
@@ -586,10 +587,29 @@ WHERE message_fts_index MATCH :$query;
 				break;
 			}
 
+			case RequestType.GetFiles: {
+				response = mapIterator(statements.getFile.iterate({ $getAll: 1, url: null }) as IterableIterator<any>, (file) => ({
+					url: file.url,
+					hash: file.content_hash,
+					errorCode: file.error_code,
+				}));
+				break;
+			}
+			case RequestType.GetFile: {
+				const file = statements.getFile.get({
+					$getAll: 0,
+					url: req.url,
+				}) as any;
+				response = file === undefined ? undefined : {
+					hash: file.content_hash,
+					errorCode: file.error_code,
+				};
+				break;
+			}
 			case RequestType.GetFileHashUtilization: {
 				response = statements.findFileByHash.get({
 					content_hash: req.hash,
-				}) != undefined;
+				}) !== undefined;
 				break;
 			}
 			case RequestType.AddFile: {

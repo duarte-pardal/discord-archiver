@@ -34,7 +34,7 @@ By default, the archiver archives data from every place every account has access
 Usage:
 
 ```
-node ./build/archiver/index.js --token <token> [--log (error | warning | info | verbose | debug)] [--stats (yes | no | auto)] [(--guild <guild id>)…] [--no-sync] [--no-reactions] <database file path>
+node ./build/archiver/index.js --token <token> [--log (error | warning | info | verbose | debug)] [--stats (yes | no | auto)] [(--guild <guild id>)…] [--no-sync] [--no-reactions] [--no-files] [--file-store-path <path>] <database file path>
 ```
 
 Options:
@@ -78,7 +78,7 @@ You can use the included search CLI application to search for messages both whil
 Usage:
 
 ```sh
-node ./build/search.js <database path>
+node ./build/apps/search.js <database path>
 ```
 
 The search application provides an interactive prompt on the terminal where you can input your queries. It uses the SQLite FTS5 extension. This allows for very fast searching but you can’t search for arbitrary substrings. You must use the [SQLite FTS5 syntax](https://www.sqlite.org/fts5.html#full_text_query_syntax) in your queries.
@@ -101,7 +101,6 @@ You can read the raw data from the database using the SQLite CLI or any SQLite d
     - **Import user account settings from HAR**
   - **Archive custom emojis**
   - **Archive DM channels**
-  - **Download files other than attachments**
   - **Allow thread enumeration to be interrupted**
   - **Fix switching accounts on permission changes (or remove multi-account support)**
   - **Archive private threads without manage permission**

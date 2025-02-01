@@ -253,8 +253,8 @@ export class GatewayConnection<GT extends GatewayTypes = GatewayTypes> extends E
 		this.#ws!.send(this.#encodePayload!(payload));
 	}
 	async sendPayload(payload: DT.GatewaySendPayload): Promise<void> {
+		// BUG: Both of these errors happen sometimes when exiting the archiver.
 		if (this.#state !== ConnectionState.Ready) throw new Error("The connection isn't ready yet");
-		// TODO: Implement a queue system? This error can happen very rarely when exiting the archiver.
 		if (this.#ws === undefined) throw new Error("There is currently no connection");
 		this.#sendPayload(payload);
 	}

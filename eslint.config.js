@@ -38,7 +38,18 @@ export default tsEslint.config(
 			"@typescript-eslint/no-unnecessary-condition": ["warn", { allowConstantLoopConditions: true }],
 			"@typescript-eslint/require-await": "off",
 			"@typescript-eslint/no-dynamic-delete": "off",
-			"@typescript-eslint/no-unused-vars": "warn",
+			"@typescript-eslint/no-unused-vars": [
+				"warn",
+				{
+					"args": "all",
+					"argsIgnorePattern": "^_",
+					"caughtErrors": "all",
+					"caughtErrorsIgnorePattern": "^_",
+					"destructuredArrayIgnorePattern": "^_",
+					"varsIgnorePattern": "^_",
+					"ignoreRestSiblings": true
+				}
+			],
 			"@typescript-eslint/no-invalid-void-type": "off",
 			"@typescript-eslint/prefer-literal-enum-member": "off",
 			"@typescript-eslint/restrict-template-expressions": ["error", {

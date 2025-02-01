@@ -20,13 +20,15 @@ import log from "../util/log.js";
 import { getTag } from "../discord-api/tag.js";
 import { RateLimiter } from "../util/rate-limiter.js";
 import { CachedChannel, CachedChannelWithSyncInfo, CachedGuild, createCachedChannel, extractThreadInfo, guilds, isChannelCacheable, ThreadInfo } from "./cache.js";
-import { Account, AccountOptions, accounts, getLeastGatewayOccupiedAccount, getLeastRESTOccupiedAccount } from "./accounts.js";
+import { Account, AccountOptions, accounts, getLeastGatewayOccupiedAccount, getLeastRESTOccupiedAccount, OngoingOperation } from "./accounts.js";
 import { ArchivedThreadSyncProgress, downloadProgresses, MessageSyncProgress, progressCounts, startProgressDisplay, stopProgressDisplay, updateProgressOutput } from "./progress.js";
-import { closeFileStore, downloadFile, openFileStore, PendingFileInfo, settleFile } from "./files.js";
+import { closeFileStore, CurrentDownload, downloadFileIfNeeded, openFileStore, performFileTransaction } from "./files.js";
 import { mergeOptions } from "../util/http.js";
-import { ConcurrencyLimiter } from "../util/concurrency-limiter.js";
 import { promiseWithResolvers } from "../util/promise.js";
 import { mapIterator } from "../util/iterators.js";
+import { setMaxListeners } from "node:events";
+
+setMaxListeners(100);
 
 const args = {
 	strict: true,
@@ -91,7 +93,7 @@ try {
 	}
 } catch {
 	console.error("\
-Usage: node ./build/archiver/index.js --token <token> [--log (error | warning | info | verbose | debug)] [--stats (yes | no | auto)] [(--guild <guild id>)…] [--no-sync] [--no-reactions] <database path>");
+Usage: node index.js --token <token> [--log (error | warning | info | verbose | debug)] [--stats (yes | no | auto)] [(--guild <guild id>)…] [--no-sync] [--no-reactions] [--no-files] [--file-store-path <path>] <database path>");
 	process.exit(1);
 }
 
@@ -113,8 +115,6 @@ const globalAbortSignal = globalAbortController.signal;
 let allReady = false;
 
 // SYNCING
-
-const fileDownloadLimiter = new ConcurrencyLimiter(8);
 
 
 // TODO: This can be optimized. We don't need to wait for all reactions/files from the previous
@@ -215,9 +215,67 @@ export async function syncMessages(account: Account, channel: CachedChannel | Th
 
 					for (i = messages.length - 1; i >= 0; i--) {
 						const message = messages[i];
+
+
+						// Download files, including attachments and embedded media
+
+						const filesToDownload: { url: string; downloadURL: string }[] = [];
+
+						if (!options["no-files"]) {
+							// TODO: Clean this up
+							function stripQuery(url: string) {
+								const i = url.indexOf("?");
+								return i === -1 ? url : url.slice(0, i);
+							}
+							function normalizeURL(url: string) {
+								if (/^https?:\/\/cdn\.discordapp\.com\/attachments\//.test(url)) url = stripQuery(url);
+								return url;
+							}
+
+							for (const attachment of message.attachments) {
+								const normalizedURL = stripQuery(attachment.url);
+
+								if (log.warning) {
+									// Verify if the URL matches what's expected
+									const path = `/attachments/${
+										(message.flags ?? 0) & DT.MessageFlags.IsCrosspost ? message.message_reference?.channel_id : message.channel_id
+									}/${attachment.id}/${attachment.filename}`;
+									if (
+										normalizedURL !== `https://cdn.discordapp.com${path}` ||
+										stripQuery(attachment.proxy_url) !== `https://media.discordapp.net${path}`
+									) {
+										log.warning("WARNING: The attachment URLs differ from the expected.\nurl: %o\nproxy_url: %o\nexpected path: %o\n", attachment.url, attachment.proxy_url, path);
+									}
+								}
+
+								filesToDownload.push({ url: normalizedURL, downloadURL: attachment.url });
+							}
+							for (const embed of message.embeds) {
+								if (embed.footer?.icon_url != undefined && embed.footer.proxy_icon_url != undefined) {
+									filesToDownload.push({ url: normalizeURL(embed.footer.icon_url), downloadURL: embed.footer.proxy_icon_url });
+								}
+								if (embed.image?.url != undefined && embed.image.proxy_url != undefined) {
+									filesToDownload.push({ url: normalizeURL(embed.image.url), downloadURL: embed.image.proxy_url });
+								}
+								if (embed.thumbnail?.url != undefined && embed.thumbnail.proxy_url != undefined) {
+									filesToDownload.push({ url: normalizeURL(embed.thumbnail.url), downloadURL: embed.thumbnail.proxy_url });
+								}
+								if (embed.video?.url != undefined && embed.video.proxy_url != undefined) {
+									filesToDownload.push({ url: normalizeURL(embed.video.url), downloadURL: embed.video.proxy_url });
+								}
+								if (embed.author?.icon_url != undefined && embed.author.proxy_icon_url != undefined) {
+									filesToDownload.push({ url: normalizeURL(embed.author.icon_url), downloadURL: embed.author.proxy_icon_url });
+								}
+							}
+							if (message.author.avatar != null) {
+								const avatarURL = `https://cdn.discordapp.com/avatars/${message.author.id}/${message.author.avatar}.webp?size=4096&quality=lossless`;
+								filesToDownload.push({ url: avatarURL, downloadURL: avatarURL });
+							}
+						}
+
 						if (
 							(!options["no-reactions"] && message.reactions !== undefined && message.reactions.length !== 0) ||
-							(!options["no-files"] && message.attachments.length > 0)
+							filesToDownload.length > 0
 						) {
 							flushSimpleMessages();
 							simpleMessagesStartIndex = i - 1;
@@ -276,42 +334,8 @@ export async function syncMessages(account: Account, channel: CachedChannel | Th
 								}
 							}
 
-							let files: PendingFileInfo[];
-							try {
-								files = await Promise.all(message.attachments.map((attachment) => {
-									if (log.warning) {
-										// Verify if the URL matches what's expected
-										function stripQuery(url: string) {
-											const i = url.indexOf("?");
-											return i === -1 ? url : url.slice(0, i);
-										}
-										const path = `/attachments/${
-											(message.flags ?? 0) & DT.MessageFlags.IsCrosspost ? message.message_reference?.channel_id : message.channel_id
-										}/${attachment.id}/${attachment.filename}`;
-										if (
-											stripQuery(attachment.url) !== `https://cdn.discordapp.com${path}` ||
-											stripQuery(attachment.proxy_url) !== `https://media.discordapp.net${path}`
-										) {
-											log.warning("WARNING: The attachment URLs differ from the expected.\nurl: %o\nproxy_url: %o\nexpected path: %o\n", attachment.url, attachment.proxy_url, path);
-										}
-									}
-
-									return fileDownloadLimiter.runWhenFree(() => downloadFile(fileStorePath, attachment.url, abortController.signal));
-								}));
-							} catch (err) {
-								if (err !== abortError) {
-									if ((err as { code?: unknown }).code === "ENOSPC") {
-										log.warning?.("Error while downloading a file due to lack of storage space.");
-									} else {
-										log.warning?.("Error while downloading file: %o", err);
-									}
-								}
-								throw abortError;
-							}
-
-							if (abortController.signal.aborted as boolean) throw abortError;
-
-							db.transaction(async () => {
+							const downloads = filesToDownload.map(({ url, downloadURL }) => downloadFileIfNeeded(fileStorePath, db, url, downloadURL));
+							await performFileTransaction(fileStorePath, db, abortController.signal, downloads, async () => {
 								lastMessageAddPromise = db.request({
 									type: RequestType.AddMessageSnapshot,
 									message,
@@ -326,31 +350,7 @@ export async function syncMessages(account: Account, channel: CachedChannel | Th
 										timing: null,
 									});
 								}
-								for (const fileInfo of files) {
-									if (fileInfo.errorStatusCode !== null) {
-										db.request({
-											type: RequestType.AddFile,
-											url: fileInfo.url,
-											errorCode: fileInfo.errorStatusCode,
-											hash: null,
-										});
-									} else {
-										db.request({
-											type: RequestType.AddFile,
-											url: fileInfo.url,
-											errorCode: null,
-											hash: fileInfo.hash,
-										});
-									}
-								}
 							});
-
-							// Move the new unique files to the main directory
-							for (const fileInfo of files) {
-								if (fileInfo.errorStatusCode === null && fileInfo.temporaryPath !== null) {
-									settleFile(fileStorePath, fileInfo.temporaryPath, fileInfo.hash);
-								}
-							}
 
 							updateProgress(message.id, 1);
 						}
@@ -611,9 +611,9 @@ function syncAllGuildMembers(account: Account, cachedGuild: CachedGuild) {
 	});
 }
 
-function connectAccount(options: AccountOptions): Promise<void> {
+function connectAccount(accountOptions: AccountOptions): Promise<void> {
 	return new Promise((res, rej) => {
-		const bot = options.mode === "bot";
+		const bot = accountOptions.mode === "bot";
 
 		let ready = false;
 
@@ -630,7 +630,7 @@ function connectAccount(options: AccountOptions): Promise<void> {
 		}
 
 		const gatewayConnection = new GatewayConnection({
-			identifyData: options.gatewayIdentifyData,
+			identifyData: accountOptions.gatewayIdentifyData,
 		});
 
 		gatewayConnection.addListener("connecting", () => {
@@ -646,500 +646,558 @@ function connectAccount(options: AccountOptions): Promise<void> {
 				timestamp,
 				realtime,
 			};
-			switch (payload.t) {
-				case "READY": {
-					account.details = {
-						id: payload.d.user.id,
-						tag: getTag(payload.d.user),
-					};
-					log.info?.(`Gateway connection ready for ${account.name} (${account.details.tag}).`);
-					numberOfGuildsLeft = payload.d.guilds.length;
-					break;
-				}
 
-				case "GUILD_DELETE": {
-					if (payload.d.unavailable) {
-						receivedGuildInfo();
-					}
-					break;
-				}
+			const abortController = new AbortController();
+			const { promise: end, resolve: endOperation } = promiseWithResolvers<void>();
+			const operation: OngoingOperation = {
+				abortController,
+				end,
+			};
+			account.ongoingDispatchHandlers.add(operation);
 
-				case "GUILD_CREATE": {
-					receivedGuildInfo();
-					let cachedGuild: CachedGuild;
-					const guild = payload.d;
-					const rolePermissions = new Map(guild.roles.map(r => [r.id, BigInt(r.permissions)]));
-					const ownMember = guild.members.find(m => m.user.id === account.details!.id)!;
-
-					if (!guilds.has(guild.id)) {
-						cachedGuild = {
-							id: guild.id,
-							name: guild.name,
-							ownerID: guild.owner_id,
-							rolePermissions,
-							accountData: new Map(),
-							textChannels: new Map(),
-							memberUserIDs: new Set(),
+			try {
+				switch (payload.t) {
+					case "READY": {
+						account.details = {
+							id: payload.d.user.id,
+							tag: getTag(payload.d.user),
 						};
-						cachedGuild.textChannels = new Map(
-							(payload.d.channels.filter(isChannelCacheable)).map(c => [c.id, createCachedChannel(c, cachedGuild)]),
-						);
-						guilds.set(guild.id, cachedGuild);
-						for (const channel of cachedGuild.textChannels.values()) {
-							channel.guild = cachedGuild;
+						log.info?.(`Gateway connection ready for ${account.name} (${account.details.tag}).`);
+						numberOfGuildsLeft = payload.d.guilds.length;
+						break;
+					}
+
+					case "GUILD_DELETE": {
+						if (payload.d.unavailable) {
+							receivedGuildInfo();
 						}
-						for (const thread of guild.threads) {
-							const parent = cachedGuild.textChannels.get(thread.parent_id)!;
-							parent.syncInfo!.activeThreads.add(extractThreadInfo(thread, parent));
-						}
+						break;
+					}
 
-						cachedGuild.accountData.set(account, {
-							roles: new Set(ownMember.roles),
-							guildPermissions: computeGuildPermissions(account, cachedGuild, ownMember.roles),
-						});
-						updateGuildPermissions(cachedGuild);
+					case "GUILD_CREATE": {
+						receivedGuildInfo();
+						let cachedGuild: CachedGuild;
+						const guild = payload.d;
+						const rolePermissions = new Map(guild.roles.map(r => [r.id, BigInt(r.permissions)]));
+						const ownMember = guild.members.find(m => m.user.id === account.details!.id)!;
 
-						updateProgressOutput();
+						if (!guilds.has(guild.id)) {
+							const iconDownloads: CurrentDownload[] = [];
+							if (!options["no-files"] && guild.icon != null) {
+								const iconURL = `https://cdn.discordapp.com/icons/${guild.id}/${guild.icon}.webp?size=4096&quality=lossless`;
+								iconDownloads.push(downloadFileIfNeeded(fileStorePath, db, iconURL, iconURL));
+							}
 
-						db.transaction(async () => {
-							db.request({
-								type: RequestType.SyncGuildChannelsAndRoles,
-								guildID: BigInt(guild.id),
-								channelIDs: new Set(guild.channels.map(c => BigInt(c.id))),
-								roleIDs: new Set(guild.roles.map(r => BigInt(r.id))),
-								timing: {
-									timestamp,
-									realtime: false,
-								},
+							// Will be awaited below.
+							const initialSyncPromise = performFileTransaction(fileStorePath, db, abortController.signal, iconDownloads, async () => {
+								db.request({
+									type: RequestType.SyncGuildChannelsAndRoles,
+									guildID: BigInt(guild.id),
+									channelIDs: new Set(guild.channels.map(c => BigInt(c.id))),
+									roleIDs: new Set(guild.roles.map(r => BigInt(r.id))),
+									timing: {
+										timestamp,
+										realtime: false,
+									},
+								});
+
+								db.request({
+									type: RequestType.AddGuildSnapshot,
+									guild,
+									timing: {
+										timestamp,
+										realtime: false,
+									},
+								});
+
+								for (const role of guild.roles) {
+									db.request({
+										type: RequestType.AddRoleSnapshot,
+										role,
+										guildID: guild.id,
+										timing: {
+											timestamp,
+											realtime: false,
+										},
+									});
+								}
+
+								for (const channel of guild.channels) {
+									db.request({
+										type: RequestType.AddChannelSnapshot,
+										channel: Object.assign(channel, { guild_id: guild.id }),
+										timing: {
+											timestamp,
+											realtime: false,
+										},
+									});
+								}
+
+								for (const thread of guild.threads) {
+									db.request({
+										type: RequestType.AddChannelSnapshot,
+										channel: Object.assign(thread, { guild_id: guild.id }),
+										timing: {
+											timestamp,
+											realtime: false,
+										},
+									});
+								}
 							});
 
+							cachedGuild = {
+								id: guild.id,
+								name: guild.name,
+								ownerID: guild.owner_id,
+								rolePermissions,
+								accountData: new Map(),
+								textChannels: new Map(),
+								memberUserIDs: new Set(),
+								initialSyncPromise,
+							};
+							cachedGuild.textChannels = new Map(
+								(payload.d.channels.filter(isChannelCacheable)).map(c => [c.id, createCachedChannel(c, cachedGuild)]),
+							);
+							guilds.set(guild.id, cachedGuild);
+							for (const channel of cachedGuild.textChannels.values()) {
+								channel.guild = cachedGuild;
+							}
+							for (const thread of guild.threads) {
+								const parent = cachedGuild.textChannels.get(thread.parent_id)!;
+								parent.syncInfo!.activeThreads.add(extractThreadInfo(thread, parent));
+							}
+
+							cachedGuild.accountData.set(account, {
+								roles: new Set(ownMember.roles),
+								guildPermissions: computeGuildPermissions(account, cachedGuild, ownMember.roles),
+							});
+							updateGuildPermissions(cachedGuild);
+
+							updateProgressOutput();
+
+							await initialSyncPromise;
+							log.verbose?.(`Synced basic guild info for ${cachedGuild.name} (${cachedGuild.id}) using ${account.name}.`);
+						} else {
+							cachedGuild = guilds.get(guild.id)!;
+						}
+
+						if (allReady) {
+							const syncAccount = getLeastGatewayOccupiedAccount(cachedGuild.accountData.keys());
+							if (syncAccount !== undefined) {
+								syncAllGuildMembers(syncAccount, cachedGuild);
+							}
+							// TODO: Resync
+						}
+
+						break;
+					}
+					case "GUILD_UPDATE": {
+						// This assumes that no permission changes are caused by this event.
+						await db.transaction(async () => {
 							db.request({
 								type: RequestType.AddGuildSnapshot,
-								guild,
-								timing: {
-									timestamp,
-									realtime: false,
-								},
-							});
-
-							for (const role of guild.roles) {
-								db.request({
-									type: RequestType.AddRoleSnapshot,
-									role,
-									guildID: guild.id,
-									timing: {
-										timestamp,
-										realtime: false,
-									},
-								});
-							}
-
-							for (const channel of guild.channels) {
-								db.request({
-									type: RequestType.AddChannelSnapshot,
-									channel: Object.assign(channel, { guild_id: guild.id }),
-									timing: {
-										timestamp,
-										realtime: false,
-									},
-								});
-							}
-
-							for (const thread of guild.threads) {
-								db.request({
-									type: RequestType.AddChannelSnapshot,
-									channel: Object.assign(thread, { guild_id: guild.id }),
-									timing: {
-										timestamp,
-										realtime: false,
-									},
-								});
-							}
-						});
-						log.verbose?.(`Synced basic guild info for ${cachedGuild.name} (${cachedGuild.id}) using ${account.name}.`);
-					} else {
-						cachedGuild = guilds.get(guild.id)!;
-					}
-
-					if (allReady) {
-						const syncAccount = getLeastGatewayOccupiedAccount(cachedGuild.accountData.keys());
-						if (syncAccount !== undefined) {
-							syncAllGuildMembers(syncAccount, cachedGuild);
-						}
-						// TODO: Resync
-					}
-
-					break;
-				}
-				case "GUILD_UPDATE": {
-					// This assumes that no permission changes are caused by this event.
-					db.request({
-						type: RequestType.AddGuildSnapshot,
-						guild: payload.d,
-						timing,
-					});
-					break;
-				}
-
-				case "GUILD_ROLE_CREATE":
-				case "GUILD_ROLE_UPDATE":
-				{
-					db.transaction(async () => {
-						db.request({
-							type: RequestType.AddRoleSnapshot,
-							role: payload.d.role,
-							guildID: payload.d.guild_id,
-							timing,
-						});
-					});
-
-					const cachedGuild = guilds.get(payload.d.guild_id);
-					if (cachedGuild === undefined) {
-						log.warning?.(`Received guild role ${payload.t === "GUILD_ROLE_CREATE" ? "create" : "update"} event for an unknown guild with ID ${payload.d.guild_id}.`);
-						return;
-					}
-
-					const perms = BigInt(payload.d.role.permissions);
-
-					if (payload.t === "GUILD_ROLE_CREATE") {
-						cachedGuild.rolePermissions.set(payload.d.role.id, perms);
-					} else if (cachedGuild.rolePermissions.get(payload.d.role.id) !== perms) {
-						// TODO: Recompute permissions only for accounts with the role
-						// (also for role deletion and role list updates)
-						log.verbose?.(`Role with ID ${payload.d.role.id} from guild ${cachedGuild.name} (${payload.d.guild_id}) was updated.`);
-						cachedGuild.rolePermissions.set(payload.d.role.id, perms);
-						updateGuildPermissions(cachedGuild);
-					}
-					break;
-				}
-				case "GUILD_ROLE_DELETE": {
-					db.transaction(async () => {
-						db.request({
-							type: RequestType.MarkRoleAsDeleted,
-							id: payload.d.role_id,
-							timing,
-						});
-					});
-
-					const cachedGuild = guilds.get(payload.d.guild_id);
-					if (cachedGuild === undefined) {
-						log.warning?.(`Received guild role delete event for an unknown guild with ID ${payload.d.guild_id}.`);
-						return;
-					}
-					if (cachedGuild.rolePermissions.has(payload.d.role_id)) {
-						log.verbose?.(`Role with ID ${payload.d.role_id} from guild ${cachedGuild.name} (${payload.d.guild_id}) was deleted.`);
-						cachedGuild.rolePermissions.delete(payload.d.role_id);
-						updateGuildPermissions(cachedGuild);
-					}
-					break;
-				}
-
-				case "GUILD_MEMBERS_CHUNK": {
-					db.transaction(async () => {
-						for (const member of payload.d.members) {
-							db.request({
-								type: RequestType.AddUserSnapshot,
-								user: member.user,
-								timing: {
-									timestamp,
-									realtime: false,
-								},
-							});
-							db.request({
-								type: RequestType.AddMemberSnapshot,
-								partial: false,
-								member,
-								guildID: payload.d.guild_id,
-								userID: member.user.id,
-								timing: {
-									timestamp,
-									realtime: false,
-								},
-							});
-						}
-					});
-
-					const isLast = payload.d.chunk_index === payload.d.chunk_count - 1;
-					const cachedGuild = guilds.get(payload.d.guild_id);
-					if (cachedGuild === undefined) {
-						log.warning?.(`Received guild members chunk for an unknown guild with ID ${payload.d.guild_id}.`);
-					} else {
-						for (const member of payload.d.members) {
-							cachedGuild.memberUserIDs!.add(BigInt(member.user.id));
-						}
-						if (isLast) {
-							log.verbose?.(`Finished requesting guild members from ${cachedGuild.name} (${cachedGuild.id}) using ${account.name}.`);
-							db.transaction(async () => {
-								db.request({
-									type: RequestType.SyncGuildMembers,
-									guildID: BigInt(cachedGuild.id),
-									userIDs: cachedGuild.memberUserIDs!,
-									timing: {
-										timestamp,
-										realtime: false,
-									},
-								});
-							});
-						}
-					}
-					if (isLast) {
-						account.ongoingMemberRequests.delete(payload.d.guild_id);
-						account.numberOfOngoingGatewayOperations--;
-					}
-					break;
-				}
-
-				case "GUILD_MEMBER_ADD": {
-					db.transaction(async () => {
-						db.request({
-							type: RequestType.AddMemberSnapshot,
-							partial: false,
-							member: payload.d,
-							guildID: payload.d.guild_id,
-							userID: payload.d.user.id,
-							timing,
-						});
-					});
-					break;
-				}
-				case "GUILD_MEMBER_UPDATE": {
-					const member = payload.d;
-					// It seems that the API always returns a full member
-					// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-					if (member.joined_at == null) {
-						log.warning?.("`joined_at` is missing on a guild member update event. This snapshot won't be recorded.");
-					} else {
-						db.transaction(async () => {
-							db.request({
-								type: RequestType.AddMemberSnapshot,
-								partial: false,
-								member: member as DT.GuildMember,
-								guildID: member.guild_id,
-								userID: member.user.id,
+								guild: payload.d,
 								timing,
 							});
 						});
+						break;
 					}
 
-					const cachedGuild = guilds.get(payload.d.guild_id);
-					if (cachedGuild === undefined) {
-						log.warning?.(`Received guild member update event for an unknown guild with ID ${payload.d.guild_id}.`);
-						return;
-					}
-					for (const [account, accountData] of cachedGuild.accountData) {
-						if (account.details!.id === member.user.id) {
-							if (
-								member.roles.length !== accountData.roles.size ||
-								member.roles.some(id => !accountData.roles.has(id))
-							) {
-								log.verbose?.(`Role list in guild ${cachedGuild.name} (${cachedGuild.id}) updated for ${account.name}.`);
-								accountData.roles = new Set(member.roles);
-								updateGuildPermissions(cachedGuild);
-							}
-							break;
-						}
-					}
-					break;
-				}
-				case "GUILD_MEMBER_REMOVE": {
-					db.transaction(async () => {
-						db.request({
-							type: RequestType.AddMemberLeave,
-							guildID: payload.d.guild_id,
-							userID: payload.d.user.id,
-							timing,
-						});
-					});
-					break;
-				}
-
-				case "CHANNEL_CREATE": {
-					const channel = payload.d;
-					db.transaction(async () => {
-						db.request({
-							type: RequestType.AddChannelSnapshot,
-							channel,
-							timing: null,
-						});
-					});
-					if (isChannelCacheable(channel)) {
-						const cachedGuild = guilds.get(channel.guild_id);
-						if (cachedGuild === undefined) {
-							log.warning?.(`Received channel create event for a guild channel in an unknown guild with ID ${channel.guild_id}.`);
-							return;
-						}
-						const cachedChannel = createCachedChannel(channel, cachedGuild);
-						cachedGuild.textChannels.set(channel.id, cachedChannel);
-						// There's no need to sync the messages since there are no messages in a newly-created channel
-					}
-					break;
-				}
-
-				case "CHANNEL_UPDATE": {
-					const channel = payload.d;
-					db.transaction(async () => {
-						db.request({
-							type: RequestType.AddChannelSnapshot,
-							channel,
-							timing,
-						});
-					});
-					if (isChannelCacheable(channel)) {
-						const cachedGuild = guilds.get(channel.guild_id);
-						const cachedChannel = cachedGuild?.textChannels.get(channel.id);
-						if (cachedGuild === undefined || cachedChannel === undefined) {
-							log.warning?.(`Received channel update event for an unknown guild channel with ID ${channel.parent_id!}.`);
-						} else {
-							cachedChannel.name = channel.name!;
-
-							const permissionOverwrites = new Map(channel.permission_overwrites?.map(o => [o.id, { allow: BigInt(o.allow), deny: BigInt(o.deny) }]));
-							const didPermsChange = areMapsEqual(cachedChannel.permissionOverwrites, cachedChannel.permissionOverwrites, (a, b) => a.allow === b.allow && a.deny === b.deny);
-							if (didPermsChange) {
-								log.verbose?.(`Permissions for channel #${cachedChannel.name} (${cachedChannel.id}) changed.`);
-
-								cachedChannel.permissionOverwrites = permissionOverwrites;
-								updateGuildChannelPermissions(cachedChannel);
-							}
-						}
-					}
-					break;
-				}
-
-				// It seems that, for user accounts, the READY event only contains joined active threads and this event is sent later with the non-joined but active threads.
-				// This event is sent (containing all active threads) when the user gains access to a channel when and only if there are active threads in that channel.
-				case "THREAD_LIST_SYNC": {
-					db.transaction(async () => {
-						for (const thread of payload.d.threads) {
-							db.request({
-								type: RequestType.AddChannelSnapshot,
-								channel: thread,
-								timing,
-							});
-						}
-					});
-					if (allReady) {
+					case "GUILD_ROLE_CREATE":
+					case "GUILD_ROLE_UPDATE":
+					{
 						const cachedGuild = guilds.get(payload.d.guild_id);
 						if (cachedGuild === undefined) {
-							log.warning?.(`Received a thread list sync event for an unknown guild with ID ${payload.d.guild_id}.`);
+							log.warning?.(`Received guild role ${payload.t === "GUILD_ROLE_CREATE" ? "create" : "update"} event for an unknown guild with ID ${payload.d.guild_id}.`);
+							break;
+						}
+						await cachedGuild.initialSyncPromise;
+
+						const perms = BigInt(payload.d.role.permissions);
+
+						if (payload.t === "GUILD_ROLE_CREATE") {
+							cachedGuild.rolePermissions.set(payload.d.role.id, perms);
+						} else if (cachedGuild.rolePermissions.get(payload.d.role.id) !== perms) {
+							// TODO: Recompute permissions only for accounts with the role
+							// (also for role deletion and role list updates)
+							log.verbose?.(`Role with ID ${payload.d.role.id} from guild ${cachedGuild.name} (${payload.d.guild_id}) was updated.`);
+							cachedGuild.rolePermissions.set(payload.d.role.id, perms);
+							updateGuildPermissions(cachedGuild);
+						}
+
+						await db.transaction(async () => {
+							db.request({
+								type: RequestType.AddRoleSnapshot,
+								role: payload.d.role,
+								guildID: payload.d.guild_id,
+								timing,
+							});
+						});
+						break;
+					}
+					case "GUILD_ROLE_DELETE": {
+						const cachedGuild = guilds.get(payload.d.guild_id);
+						if (cachedGuild === undefined) {
+							log.warning?.(`Received guild role delete event for an unknown guild with ID ${payload.d.guild_id}.`);
+							break;
+						}
+						await cachedGuild.initialSyncPromise;
+						if (cachedGuild.rolePermissions.has(payload.d.role_id)) {
+							log.verbose?.(`Role with ID ${payload.d.role_id} from guild ${cachedGuild.name} (${payload.d.guild_id}) was deleted.`);
+							cachedGuild.rolePermissions.delete(payload.d.role_id);
+							updateGuildPermissions(cachedGuild);
+						}
+
+						await db.transaction(async () => {
+							db.request({
+								type: RequestType.MarkRoleAsDeleted,
+								id: payload.d.role_id,
+								timing,
+							});
+						});
+						break;
+					}
+
+					case "GUILD_MEMBERS_CHUNK": {
+						const isLast = payload.d.chunk_index === payload.d.chunk_count - 1;
+						const cachedGuild = guilds.get(payload.d.guild_id);
+						if (cachedGuild === undefined) {
+							log.warning?.(`Received guild members chunk for an unknown guild with ID ${payload.d.guild_id}.`);
 						} else {
-							for (const thread of payload.d.threads) {
-								const cachedChannel = cachedGuild.textChannels.get(thread.parent_id);
-								if (cachedChannel === undefined) {
-									log.warning?.(`Received a thread list sync event for an unknown channel with ID ${thread.parent_id}.`);
-								} else {
-									sync: {
-										for (const account of cachedGuild.accountData.keys()) {
-											if (account.ongoingMessageSyncs.get(cachedChannel)?.has(thread.id)) {
-												// The thread is already being synced. Skip it.
-												break sync;
+							await cachedGuild.initialSyncPromise;
+							for (const member of payload.d.members) {
+								// BUG: `cachedGuild.memberUserIDs` is sometimes `null`
+								cachedGuild.memberUserIDs!.add(BigInt(member.user.id));
+							}
+							if (isLast) {
+								log.verbose?.(`Finished requesting guild members from ${cachedGuild.name} (${cachedGuild.id}) using ${account.name}.`);
+								db.transaction(async () => {
+									db.request({
+										type: RequestType.SyncGuildMembers,
+										guildID: BigInt(cachedGuild.id),
+										userIDs: cachedGuild.memberUserIDs!,
+										timing: {
+											timestamp,
+											realtime: false,
+										},
+									});
+								});
+							}
+						}
+						if (isLast) {
+							account.ongoingMemberRequests.delete(payload.d.guild_id);
+							account.numberOfOngoingGatewayOperations--;
+						}
+
+						const avatarDownloads: CurrentDownload[] = [];
+						if (!options["no-files"]) {
+							for (const { user } of payload.d.members) {
+								if (user.avatar != null) {
+									const iconURL = `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.webp?size=4096&quality=lossless`;
+									avatarDownloads.push(downloadFileIfNeeded(fileStorePath, db, iconURL, iconURL));
+								}
+							}
+						}
+
+						await performFileTransaction(fileStorePath, db, abortController.signal, avatarDownloads, async () => {
+							for (const member of payload.d.members) {
+								db.request({
+									type: RequestType.AddUserSnapshot,
+									user: member.user,
+									timing: {
+										timestamp,
+										realtime: false,
+									},
+								});
+								db.request({
+									type: RequestType.AddMemberSnapshot,
+									partial: false,
+									member,
+									guildID: payload.d.guild_id,
+									userID: member.user.id,
+									timing: {
+										timestamp,
+										realtime: false,
+									},
+								});
+							}
+						});
+						break;
+					}
+
+					case "GUILD_MEMBER_ADD": {
+						await db.transaction(async () => {
+							db.request({
+								type: RequestType.AddMemberSnapshot,
+								partial: false,
+								member: payload.d,
+								guildID: payload.d.guild_id,
+								userID: payload.d.user.id,
+								timing,
+							});
+						});
+						break;
+					}
+					case "GUILD_MEMBER_UPDATE": {
+						const member = payload.d;
+						const cachedGuild = guilds.get(member.guild_id);
+						if (cachedGuild === undefined) {
+							log.warning?.(`Received guild member update event for an unknown guild with ID ${payload.d.guild_id}.`);
+							break;
+						}
+						await cachedGuild.initialSyncPromise;
+						for (const [account, accountData] of cachedGuild.accountData) {
+							if (account.details!.id === member.user.id) {
+								if (
+									member.roles.length !== accountData.roles.size ||
+									member.roles.some(id => !accountData.roles.has(id))
+								) {
+									log.verbose?.(`Role list in guild ${cachedGuild.name} (${cachedGuild.id}) updated for ${account.name}.`);
+									accountData.roles = new Set(member.roles);
+									updateGuildPermissions(cachedGuild);
+								}
+								break;
+							}
+						}
+
+						// It seems that the API always returns a full member
+						// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+						if (member.joined_at == null) {
+							log.warning?.("`joined_at` is missing on a guild member update event. This snapshot won't be recorded.");
+						} else {
+							await db.transaction(async () => {
+								db.request({
+									type: RequestType.AddMemberSnapshot,
+									partial: false,
+									member: member as DT.GuildMember,
+									guildID: member.guild_id,
+									userID: member.user.id,
+									timing,
+								});
+							});
+						}
+						break;
+					}
+					case "GUILD_MEMBER_REMOVE": {
+						const member = payload.d;
+						const cachedGuild = guilds.get(member.guild_id);
+						if (cachedGuild === undefined) {
+							log.warning?.(`Received guild member update event for an unknown guild with ID ${payload.d.guild_id}.`);
+							break;
+						}
+						await cachedGuild.initialSyncPromise;
+						await db.transaction(async () => {
+							db.request({
+								type: RequestType.AddMemberLeave,
+								guildID: payload.d.guild_id,
+								userID: payload.d.user.id,
+								timing,
+							});
+						});
+						break;
+					}
+
+					// TODO: It's not a great idea to add channels and messages to the database unconditionally.
+
+					case "CHANNEL_CREATE": {
+						const channel = payload.d;
+						if (isChannelCacheable(channel)) {
+							const cachedGuild = guilds.get(channel.guild_id);
+							if (cachedGuild === undefined) {
+								log.warning?.(`Received channel create event for a guild channel in an unknown guild with ID ${channel.guild_id}.`);
+								break;
+							}
+							const cachedChannel = createCachedChannel(channel, cachedGuild);
+							cachedGuild.textChannels.set(channel.id, cachedChannel);
+							// There's no need to sync the messages since there are no messages in a newly-created channel
+						}
+
+						await db.transaction(async () => {
+							db.request({
+								type: RequestType.AddChannelSnapshot,
+								channel,
+								timing: null,
+							});
+						});
+						break;
+					}
+
+					case "CHANNEL_UPDATE": {
+						const channel = payload.d;
+						if (isChannelCacheable(channel)) {
+							const cachedGuild = guilds.get(channel.guild_id);
+							const cachedChannel = cachedGuild?.textChannels.get(channel.id);
+							if (cachedGuild === undefined || cachedChannel === undefined) {
+								log.warning?.(`Received channel update event for an unknown guild channel with ID ${channel.parent_id!}.`);
+							} else {
+								cachedChannel.name = channel.name!;
+
+								const permissionOverwrites = new Map(channel.permission_overwrites?.map(o => [o.id, { allow: BigInt(o.allow), deny: BigInt(o.deny) }]));
+								const didPermsChange = areMapsEqual(cachedChannel.permissionOverwrites, cachedChannel.permissionOverwrites, (a, b) => a.allow === b.allow && a.deny === b.deny);
+								if (didPermsChange) {
+									log.verbose?.(`Permissions for channel #${cachedChannel.name} (${cachedChannel.id}) changed.`);
+
+									cachedChannel.permissionOverwrites = permissionOverwrites;
+									updateGuildChannelPermissions(cachedChannel);
+								}
+							}
+						}
+
+						await db.transaction(async () => {
+							db.request({
+								type: RequestType.AddChannelSnapshot,
+								channel,
+								timing,
+							});
+						});
+						break;
+					}
+
+					// It seems that, for user accounts, the READY event only contains joined active threads and this event is sent later with the non-joined but active threads.
+					// This event is sent (containing all active threads) when the user gains access to a channel when and only if there are active threads in that channel.
+					case "THREAD_LIST_SYNC": {
+						if (allReady) {
+							const cachedGuild = guilds.get(payload.d.guild_id);
+							if (cachedGuild === undefined) {
+								log.warning?.(`Received a thread list sync event for an unknown guild with ID ${payload.d.guild_id}.`);
+							} else {
+								for (const thread of payload.d.threads) {
+									const cachedChannel = cachedGuild.textChannels.get(thread.parent_id);
+									if (cachedChannel === undefined) {
+										log.warning?.(`Received a thread list sync event for an unknown channel with ID ${thread.parent_id}.`);
+									} else {
+										sync: {
+											for (const account of cachedGuild.accountData.keys()) {
+												if (account.ongoingMessageSyncs.get(cachedChannel)?.has(thread.id)) {
+													// The thread is already being synced. Skip it.
+													break sync;
+												}
 											}
+											const threadInfo = extractThreadInfo(thread, cachedChannel);
+											syncMessages(getLeastRESTOccupiedAccount(cachedChannel.accountsWithReadPermission)!, threadInfo);
 										}
-										const threadInfo = extractThreadInfo(thread, cachedChannel);
-										syncMessages(getLeastRESTOccupiedAccount(cachedChannel.accountsWithReadPermission)!, threadInfo);
 									}
 								}
 							}
 						}
-					}
-					break;
-				}
 
-				case "CHANNEL_DELETE": {
-					const channel = payload.d;
-					db.transaction(async () => {
-						db.request({
-							type: RequestType.MarkChannelAsDeleted,
-							id: channel.id,
-							timing,
+						await db.transaction(async () => {
+							for (const thread of payload.d.threads) {
+								db.request({
+									type: RequestType.AddChannelSnapshot,
+									channel: thread,
+									timing,
+								});
+							}
 						});
-					});
-					if (isChannelCacheable(channel)) {
-						const cachedGuild = guilds.get(channel.guild_id);
-						const cachedChannelExisted = cachedGuild?.textChannels.has(channel.id);
-						if (cachedGuild === undefined || cachedChannelExisted === undefined) {
-							log.warning?.(`Received channel update event for an unknown guild channel with ID ${channel.id} from guild with ID ${channel.guild_id}.`);
-						} else {
-							cachedGuild.textChannels.delete(channel.id);
+						break;
+					}
+
+					case "CHANNEL_DELETE": {
+						const channel = payload.d;
+						if (isChannelCacheable(channel)) {
+							const cachedGuild = guilds.get(channel.guild_id);
+							const cachedChannelExisted = cachedGuild?.textChannels.has(channel.id);
+							if (cachedGuild === undefined || cachedChannelExisted === undefined) {
+								log.warning?.(`Received channel update event for an unknown guild channel with ID ${channel.id} from guild with ID ${channel.guild_id}.`);
+							} else {
+								cachedGuild.textChannels.delete(channel.id);
+							}
 						}
+
+						await db.transaction(async () => {
+							db.request({
+								type: RequestType.MarkChannelAsDeleted,
+								id: channel.id,
+								timing,
+							});
+						});
+						break;
 					}
-					break;
-				}
 
-				case "MESSAGE_CREATE": {
-					const message = payload.d;
-					db.transaction(async () => {
-						db.request({
-							type: RequestType.AddMessageSnapshot,
-							message,
+					case "MESSAGE_CREATE": {
+						const message = payload.d;
+						await db.transaction(async () => {
+							db.request({
+								type: RequestType.AddMessageSnapshot,
+								message,
+							});
 						});
-					});
-					break;
-				}
-				case "MESSAGE_UPDATE": {
-					const message = payload.d;
-					db.transaction(async () => {
-						db.request({
-							type: RequestType.AddMessageSnapshot,
-							message,
+						break;
+					}
+					case "MESSAGE_UPDATE": {
+						const message = payload.d;
+						await db.transaction(async () => {
+							db.request({
+								type: RequestType.AddMessageSnapshot,
+								message,
+							});
 						});
-					});
-					break;
-				}
-				case "MESSAGE_DELETE": {
-					db.transaction(async () => {
-						db.request({
-							type: RequestType.MarkMessageAsDeleted,
-							id: payload.d.id,
-							timing,
+						break;
+					}
+					case "MESSAGE_DELETE": {
+						await db.transaction(async () => {
+							db.request({
+								type: RequestType.MarkMessageAsDeleted,
+								id: payload.d.id,
+								timing,
+							});
 						});
-					});
-					break;
-				}
+						break;
+					}
 
-				case "MESSAGE_REACTION_ADD": {
-					db.transaction(async () => {
-						db.request({
-							type: RequestType.AddReactionPlacement,
-							messageID: payload.d.message_id,
-							emoji: payload.d.emoji,
-							reactionType: payload.d.burst ? 1 : 0,
-							userID: payload.d.user_id,
-							timing,
+					case "MESSAGE_REACTION_ADD": {
+						await db.transaction(async () => {
+							db.request({
+								type: RequestType.AddReactionPlacement,
+								messageID: payload.d.message_id,
+								emoji: payload.d.emoji,
+								reactionType: payload.d.burst ? 1 : 0,
+								userID: payload.d.user_id,
+								timing,
+							});
 						});
-					});
-					break;
-				}
-				case "MESSAGE_REACTION_REMOVE": {
-					db.transaction(async () => {
-						db.request({
-							type: RequestType.MarkReactionAsRemoved,
-							messageID: payload.d.message_id,
-							emoji: payload.d.emoji,
-							reactionType: payload.d.burst ? 1 : 0,
-							userID: payload.d.user_id,
-							timing,
+						break;
+					}
+					case "MESSAGE_REACTION_REMOVE": {
+						await db.transaction(async () => {
+							db.request({
+								type: RequestType.MarkReactionAsRemoved,
+								messageID: payload.d.message_id,
+								emoji: payload.d.emoji,
+								reactionType: payload.d.burst ? 1 : 0,
+								userID: payload.d.user_id,
+								timing,
+							});
 						});
-					});
-					break;
-				}
-				case "MESSAGE_REACTION_REMOVE_EMOJI":
-				case "MESSAGE_REACTION_REMOVE_ALL":
-				{
-					db.transaction(async () => {
-						db.request({
-							type: RequestType.MarkReactionsAsRemovedBulk,
-							messageID: payload.d.message_id,
-							emoji: payload.t === "MESSAGE_REACTION_REMOVE_EMOJI" ? payload.d.emoji : null,
-							timing,
+						break;
+					}
+					case "MESSAGE_REACTION_REMOVE_EMOJI":
+					case "MESSAGE_REACTION_REMOVE_ALL":
+					{
+						await db.transaction(async () => {
+							db.request({
+								type: RequestType.MarkReactionsAsRemovedBulk,
+								messageID: payload.d.message_id,
+								emoji: payload.t === "MESSAGE_REACTION_REMOVE_EMOJI" ? payload.d.emoji : null,
+								timing,
+							});
 						});
-					});
-					break;
+						break;
+					}
+					case "MESSAGE_REACTION_ADD_MANY": {
+						// TODO for user account support
+						log.warning?.("Received a MESSAGE_REACTION_ADD_MANY gateway event: %o", payload.d);
+						break;
+					}
 				}
-				case "MESSAGE_REACTION_ADD_MANY": {
-					// TODO for user account support
-					log.warning?.("Received a MESSAGE_REACTION_ADD_MANY gateway event: %o", payload.d);
-					break;
+			} catch (err) {
+				if (err !== abortError) {
+					throw err;
 				}
+			} finally {
+				account.ongoingDispatchHandlers.delete(operation);
+				endOperation();
 			}
 		});
 
@@ -1192,13 +1250,13 @@ function connectAccount(options: AccountOptions): Promise<void> {
 		}
 
 		const account: Account = {
-			...options,
+			...accountOptions,
 			bot,
 			details: undefined,
 			gatewayConnection,
 			restOptions: {
 				headers: {
-					authorization: options.token,
+					authorization: accountOptions.token,
 				},
 			},
 			request,
@@ -1214,6 +1272,8 @@ function connectAccount(options: AccountOptions): Promise<void> {
 
 			numberOfOngoingGatewayOperations: 0,
 			ongoingMemberRequests: new Set(),
+
+			ongoingDispatchHandlers: new Set(),
 
 			references: new Set(),
 		};
@@ -1250,24 +1310,32 @@ async function disconnectAccount(account: Account) {
 		endPromises.push(end);
 		abortController.abort();
 	}
+	for (const { abortController, end } of account.ongoingDispatchHandlers.values()) {
+		endPromises.push(end);
+		abortController.abort();
+	}
 	await Promise.all(endPromises);
 }
 
 // Cleanup
 async function stop() {
 	stopProgressDisplay();
-	log.info?.("Exiting.");
+	log.info?.("Exiting. (Press Ctrl+C again to terminate abruptly.)");
 	globalAbortController.abort();
 	await Promise.all(mapIterator(accounts.values(), account => disconnectAccount(account)));
 	db.close();
-	await closeFileStore(fileStorePath);
+	if (!options["no-files"]) {
+		await closeFileStore(fileStorePath);
+	}
 }
 
 process.once("SIGINT", stop);
 process.once("SIGTERM", stop);
 
 if (!globalAbortSignal.aborted) {
-	await openFileStore(fileStorePath, db);
+	if (!options["no-files"]) {
+		await openFileStore(fileStorePath, db);
+	}
 
 	// Connect to all accounts
 	Promise.all(options.token.map((token, index) => connectAccount({
@@ -1313,31 +1381,35 @@ if (!globalAbortSignal.aborted) {
 
 		if (!options["no-sync"]) {
 			for (const guild of guilds.values()) {
-				if (options.guild !== undefined && !options.guild.includes(guild.id)) continue;
+				(async () => {
+					if (options.guild !== undefined && !options.guild.includes(guild.id)) return;
 
-				syncAllGuildMembers(getLeastGatewayOccupiedAccount(guild.accountData.keys())!, guild);
+					await guild.initialSyncPromise;
 
-				for (const channel of guild.textChannels.values() as IterableIterator<CachedChannelWithSyncInfo>) {
-					if (channel.accountsWithReadPermission.size > 0) {
-						syncMessages(getLeastRESTOccupiedAccount(channel.accountsWithReadPermission)!, channel);
+					syncAllGuildMembers(getLeastGatewayOccupiedAccount(guild.accountData.keys())!, guild);
 
-						// Voice channels can't have threads
-						if (channel.type !== DT.ChannelType.GuildVoice) {
-							if (channel.accountsWithReadPermission.size > 0) {
-								if (channel.accountsWithManageThreadsPermission.size > 0) {
-									syncAllArchivedThreads(getLeastRESTOccupiedAccount(channel.accountsWithManageThreadsPermission)!, channel, ArchivedThreadListType.Private);
+					for (const channel of guild.textChannels.values() as IterableIterator<CachedChannelWithSyncInfo>) {
+						if (channel.accountsWithReadPermission.size > 0) {
+							syncMessages(getLeastRESTOccupiedAccount(channel.accountsWithReadPermission)!, channel);
+
+							// Voice channels can't have threads
+							if (channel.type !== DT.ChannelType.GuildVoice) {
+								if (channel.accountsWithReadPermission.size > 0) {
+									if (channel.accountsWithManageThreadsPermission.size > 0) {
+										syncAllArchivedThreads(getLeastRESTOccupiedAccount(channel.accountsWithManageThreadsPermission)!, channel, ArchivedThreadListType.Private);
+									}
+
+									for (const thread of channel.syncInfo.activeThreads) {
+										syncMessages(getLeastRESTOccupiedAccount(channel.accountsWithReadPermission)!, thread);
+									}
+
+									syncAllArchivedThreads(getLeastRESTOccupiedAccount(channel.accountsWithReadPermission)!, channel, ArchivedThreadListType.Public);
 								}
-
-								for (const thread of channel.syncInfo.activeThreads) {
-									syncMessages(getLeastRESTOccupiedAccount(channel.accountsWithReadPermission)!, thread);
-								}
-
-								syncAllArchivedThreads(getLeastRESTOccupiedAccount(channel.accountsWithReadPermission)!, channel, ArchivedThreadListType.Public);
 							}
 						}
+						(channel as CachedChannel).syncInfo = null;
 					}
-					(channel as CachedChannel).syncInfo = null;
-				}
+				})();
 			}
 		}
 	});

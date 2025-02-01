@@ -42,6 +42,8 @@ export type Account = AccountOptions & {
 	/** Set of guild IDs */
 	ongoingMemberRequests: Set<string>;
 
+	ongoingDispatchHandlers: Set<OngoingOperation>;
+
 	/** The sets and maps that contain entries with this account as the key, used when disconnecting the account */
 	references: Set<Set<Account> | Map<Account, unknown>>;
 };

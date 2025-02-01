@@ -49,6 +49,11 @@ export type CachedGuild = {
 	accountData: Map<Account, GuildAccountData>;
 	textChannels: Map<string, CachedChannel>;
 	memberUserIDs: Set<bigint> | null;
+	/**
+	 * Resolved when the guild is stored in the database. This is needed because the initial sync
+	 * involves download the guild's icon, if it has one.
+	 */
+	initialSyncPromise: Promise<void>;
 };
 
 export const guilds = new Map<string, CachedGuild>();

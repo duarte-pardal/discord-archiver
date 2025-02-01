@@ -38,6 +38,8 @@ export const enum RequestType {
 	AddReactionPlacement,
 	MarkReactionAsRemoved,
 	MarkReactionsAsRemovedBulk,
+	GetFile,
+	GetFiles,
 	GetFileHashUtilization,
 	AddFile,
 	GetLastMessageID,
@@ -158,6 +160,13 @@ export type MarkReactionAsRemovedBulkRequest = {
 	emoji: DT.PartialEmoji | null;
 	timing: Timing;
 };
+export type GetFileRequest = {
+	type: RequestType.GetFile;
+	url: string;
+};
+export type GetFilesRequest = {
+	type: RequestType.GetFiles;
+};
 export type GetFileHashUtilizationRequest = {
 	type: RequestType.GetFileHashUtilization;
 	hash: Uint8Array;
@@ -223,16 +232,24 @@ export type SingleRequest =
 	AddReactionPlacementRequest |
 	MarkReactionAsRemovedRequest |
 	MarkReactionAsRemovedBulkRequest |
+	GetFileRequest |
 	GetFileHashUtilizationRequest |
 	AddFileRequest |
 	GetLastMessageIDRequest |
 	CountChannelMessagesRequest;
 export type IteratorRequest =
+	GetFilesRequest |
 	GetGuildsRequest |
 	GetDMChannelsRequest |
 	GetGuildChannelsRequest |
 	GetChannelMessagesRequest |
 	SearchMessagesRequest;
+
+export type File = {
+	url: string;
+	hash: Uint8Array | null;
+	errorCode: number | null;
+};
 
 export type ResponseFor<R extends SingleRequest> =
 	R extends CommandRequest ? void :
@@ -253,8 +270,9 @@ export type ResponseFor<R extends SingleRequest> =
 	R extends AddReactionPlacementRequest ? void :
 	R extends MarkReactionAsRemovedRequest ? void :
 	R extends MarkReactionAsRemovedBulkRequest ? void :
-	R extends AddFileRequest ? boolean :
+	R extends GetFileRequest ? Omit<File, "url"> | undefined :
 	R extends GetFileHashUtilizationRequest ? boolean :
+	R extends AddFileRequest ? boolean :
 	R extends GetLastMessageIDRequest ? bigint | null :
 	R extends CountChannelMessagesRequest ? bigint | null :
 	never;
@@ -265,6 +283,7 @@ export type DeletableLatestSnapshotTimings = {
 };
 
 export type IteratorResponseFor<R extends IteratorRequest> =
+	R extends GetFilesRequest ? File :
 	R extends GetGuildsRequest ? DeletableLatestSnapshotTimings & {
 		guild: DT.Guild;
 	} :
