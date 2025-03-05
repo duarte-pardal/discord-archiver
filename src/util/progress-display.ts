@@ -1,7 +1,7 @@
 let text = "";
 let lines = 0;
 
-if (process.stderr.isTTY) {
+if (process.stdout.isTTY && process.stderr.isTTY) {
 	function clear() {
 		process.stderr.write(`${lines > 0 ? `\x1B[${lines}A` : ""}\x1B[G\x1B[J`);
 	}
@@ -14,7 +14,7 @@ if (process.stderr.isTTY) {
 		"debug",
 		"dir",
 		"dirxml",
-		...(process.stderr.isTTY as boolean | undefined ? ["error"] as const : [] as const),
+		"error",
 		"info",
 		"log",
 		"table",

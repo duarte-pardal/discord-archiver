@@ -10,6 +10,7 @@ import { default as SQLite, Statement, SqliteError } from "better-sqlite3";
 import { SingleRequest, ResponseFor, Timing, RequestType, IteratorRequest, IteratorResponseFor, GetGuildChannelsRequest, GetDMChannelsRequest, GetChannelMessagesRequest, AddSnapshotResult } from "./types.js";
 import { encodeSnowflakeArray, encodeObject, ObjectType, encodeImageHash, decodeObject, encodePermissionOverwrites, decodePermissionOverwrites, decodeImageHash, encodeEmoji, encodeEmojiProps, DiscordEmojiProps } from "./generic-encoding.js";
 import { mapIterator } from "../util/iterators.js";
+import { Logger } from "../util/log.js";
 
 const SNOWFLAKE_LOWER_BOUND = 281474976710656n; // 2n ** 48n
 
@@ -22,7 +23,7 @@ export type RequestHandler = {
 	never;
 };
 
-export function getRequestHandler({ path, log }: { path: string; log?: typeof import("../util/log.js").default }): RequestHandler {
+export function getRequestHandler({ path, log }: { path: string; log?: Logger }): RequestHandler {
 	const db = new SQLite(path, {
 		verbose: log?.debug,
 	});
@@ -175,7 +176,7 @@ SELECT _user_id, _guild_id, _timestamp, nick, avatar, roles, joined_at, premium_
 			replaceLatestSnapshot: db.prepare(`\
 UPDATE latest_member_snapshots SET _timestamp = :_timestamp, nick = :nick, avatar = :avatar, roles = :roles, joined_at = :joined_at, premium_since = :premium_since, pending = :pending, communication_disabled_until = :communication_disabled_until WHERE _user_id = :_user_id AND _guild_id = :_guild_id;
 `),
-			getNotLeftUserIDsByGuildID: db.prepare(`\
+			getCurrentMemberUserIDsByGuildID: db.prepare(`\
 SELECT _user_id FROM latest_member_snapshots WHERE _guild_id IS :_guild_id AND joined_at IS NOT NULL;
 `),
 		},
@@ -348,7 +349,7 @@ WHERE message_fts_index MATCH :$query;
 			}
 			case RequestType.SyncGuildMembers: {
 				const timestamp = encodeTiming(req.timing);
-				const stored = objectStatements.member.getNotLeftUserIDsByGuildID.all({ _guild_id: req.guildID }) as any[];
+				const stored = objectStatements.member.getCurrentMemberUserIDsByGuildID.all({ _guild_id: req.guildID }) as any[];
 				const sqlParams = {
 					_guild_id: req.guildID,
 					_user_id: 0n,
@@ -392,6 +393,17 @@ WHERE message_fts_index MATCH :$query;
 			}
 			case RequestType.AddChannelSnapshot: {
 				const timestamp = encodeTiming(req.timing);
+
+				const channel = encodeObject(ObjectType.Channel, req.channel);
+				if (req.channel.type === DT.ChannelType.DM || req.channel.type === DT.ChannelType.GroupDM) {
+					channel.guild_id = 0;
+				} else if (req.channel.type === DT.ChannelType.PublicThread || req.channel.type === DT.ChannelType.PrivateThread || req.channel.type === DT.ChannelType.AnnouncementThread) {
+					channel.guild_id = null;
+				}
+				channel.permission_overwrites = (req.channel as any).permission_overwrites == null ? null : encodePermissionOverwrites((req.channel as any).permission_overwrites);
+				channel._timestamp = timestamp;
+				response = addSnapshot(objectStatements.channel, channel);
+
 				if (req.channel.type === DT.ChannelType.GuildForum || req.channel.type === DT.ChannelType.GuildMedia) {
 					for (const jsonTag of req.channel.available_tags) {
 						const tag = encodeObject(ObjectType.ForumTag, jsonTag);
@@ -407,16 +419,6 @@ WHERE message_fts_index MATCH :$query;
 						timestamp,
 					);
 				}
-
-				const channel = encodeObject(ObjectType.Channel, req.channel);
-				if (req.channel.type === DT.ChannelType.DM || req.channel.type === DT.ChannelType.GroupDM) {
-					channel.guild_id = 0;
-				} else if (req.channel.type === DT.ChannelType.PublicThread || req.channel.type === DT.ChannelType.PrivateThread || req.channel.type === DT.ChannelType.AnnouncementThread) {
-					channel.guild_id = null;
-				}
-				channel.permission_overwrites = (req.channel as any).permission_overwrites == null ? null : encodePermissionOverwrites((req.channel as any).permission_overwrites);
-				channel._timestamp = timestamp;
-				response = addSnapshot(objectStatements.channel, channel);
 				break;
 			}
 			case RequestType.MarkChannelAsDeleted: {

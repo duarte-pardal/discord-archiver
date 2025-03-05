@@ -94,7 +94,7 @@ function messageHandler(req: SingleRequest | IteratorRequest) {
 	} catch (error) {
 		let newError: any = error;
 		if (error instanceof SqliteError) {
-			newError = new Error(`SQLite error (${error.code}): ${error.message}`);
+			newError = new Error(`SQLite error (${error.code}) during request of type ${req.type}: ${error.message}`);
 		}
 		parentPort!.postMessage({
 			type: WorkerMessageType.Error,

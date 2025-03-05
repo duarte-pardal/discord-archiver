@@ -32,11 +32,22 @@ function levelToNumber(level: string | number): LoggingLevel {
 	return levelNumber;
 }
 
-function log(...args: unknown[]) {
+function log(...args: unknown[]): void {
 	console.log(...args);
 }
 
-export default {
+export type Logger = {
+	log: (this: void, ...args: unknown[]) => void;
+	maxLevelNumber: LoggingLevel;
+	setLevel: (level: string | number) => void;
+	error: ((this: void, ...args: unknown[]) => void) | undefined;
+	warning: ((this: void, ...args: unknown[]) => void) | undefined;
+	info: ((this: void, ...args: unknown[]) => void) | undefined;
+	verbose: ((this: void, ...args: unknown[]) => void) | undefined;
+	debug: ((this: void, ...args: unknown[]) => void) | undefined;
+};
+
+const logger: Logger = {
 	log,
 	maxLevelNumber: 2,
 	setLevel(level: string | number) {
@@ -54,13 +65,5 @@ export default {
 	info: log,
 	verbose: undefined,
 	debug: undefined,
-} as {
-	log: (this: void, ...args: unknown[]) => void;
-	maxLevelNumber: LoggingLevel;
-	setLevel: (level: string | number) => void;
-	error: ((this: void, ...args: unknown[]) => void) | undefined;
-	warning: ((this: void, ...args: unknown[]) => void) | undefined;
-	info: ((this: void, ...args: unknown[]) => void) | undefined;
-	verbose: ((this: void, ...args: unknown[]) => void) | undefined;
-	debug: ((this: void, ...args: unknown[]) => void) | undefined;
 };
+export default logger;

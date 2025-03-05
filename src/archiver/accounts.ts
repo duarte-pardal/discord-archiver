@@ -1,5 +1,5 @@
 import { GatewayConnection, GatewayTypes } from "../discord-api/gateway/connection.js";
-import { CachedChannel, CachedGuild, ThreadInfo } from "./cache.js";
+import { CachedTextLikeChannel, ThreadInfo } from "./cache.js";
 import { RequestResult } from "../discord-api/rest.js";
 
 export type OngoingOperation = {
@@ -7,7 +7,7 @@ export type OngoingOperation = {
 	end: Promise<void>;
 };
 export type OngoingMessageSync = OngoingOperation & {
-	channel: CachedChannel | ThreadInfo;
+	channel: CachedTextLikeChannel | ThreadInfo;
 };
 
 export type AccountOptions = {
@@ -25,18 +25,19 @@ export type Account = AccountOptions & {
 	} | undefined;
 	gatewayConnection: GatewayConnection;
 	restOptions: RequestInit;
-	request<T>(endpoint: string, options?: RequestInit, abortIfFail?: boolean | undefined): Promise<RequestResult<T>>;
-	joinedGuilds: CachedGuild[];
+	request<T>(endpoint: string, options?: RequestInit, abortIfFail?: boolean): Promise<RequestResult<T>>;
+
+	disconnect: () => Promise<void>;
 
 	numberOfOngoingRESTOperations: number;
 	/** For channels and its public threads */
-	ongoingMessageSyncs: Map<CachedChannel, Map<string /* the channel/thread ID */, OngoingMessageSync>>;
+	ongoingMessageSyncs: Map<CachedTextLikeChannel, Map<string /* the channel/thread ID */, OngoingMessageSync>>;
 	/** For private threads */
-	ongoingPrivateThreadMessageSyncs: Map<CachedChannel, Map<string /* the thread ID */, OngoingMessageSync>>;
+	ongoingPrivateThreadMessageSyncs: Map<CachedTextLikeChannel, Map<string /* the thread ID */, OngoingMessageSync>>;
 
-	ongoingPublicThreadListSyncs: Map<CachedChannel, OngoingOperation>;
-	ongoingPrivateThreadListSyncs: Map<CachedChannel, OngoingOperation>;
-	ongoingJoinedPrivateThreadListSyncs: Map<CachedChannel, OngoingOperation>;
+	ongoingPublicThreadListSyncs: Map<CachedTextLikeChannel, OngoingOperation>;
+	ongoingPrivateThreadListSyncs: Map<CachedTextLikeChannel, OngoingOperation>;
+	ongoingJoinedPrivateThreadListSyncs: Map<CachedTextLikeChannel, OngoingOperation>;
 
 	numberOfOngoingGatewayOperations: number;
 	/** Set of guild IDs */

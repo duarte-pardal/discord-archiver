@@ -9,14 +9,14 @@ export const abortError = new AbortError();
 
 export type AbortSignal = {
 	aborted: boolean;
-	addEventListener(type: "abort", listener: () => void, options?: { once: boolean } | undefined): void;
+	addEventListener(type: "abort", listener: () => void, options?: { once: boolean }): void;
 	removeEventListener(type: "abort", listener: () => void): void;
 };
 
 /**
  * Returns a promise that resolves after a specified amount of time or rejects with `abortError` if the `AbortSignal` is aborted.
  */
-export function timeout(ms: number, abortSignal?: AbortSignal | null | undefined): Promise<void> {
+export function timeout(ms: number, abortSignal?: AbortSignal | null): Promise<void> {
 	return new Promise((res, rej) => {
 		const abortHandler = () => {
 			clearTimeout(timeoutID);
@@ -67,4 +67,38 @@ export function extendAbortSignal(signal: AbortSignal | null | undefined): { con
 			},
 		};
 	}
+}
+
+export function preventUnsettled<T>(signal: AbortSignal, message: string, promise: Promise<T>): Promise<T> {
+	return new Promise((res, rej) => {
+		let timeout: NodeJS.Timeout | undefined;
+		const abortHandler = () => {
+			rej(abortError);
+			timeout = setTimeout(() => {
+				console.debug(`Unsettled promise: ${message}`);
+			}, 500);
+		};
+		signal.addEventListener("abort", abortHandler, { once: true });
+		promise
+			.finally(() => {
+				signal.removeEventListener("abort", abortHandler);
+				clearTimeout(timeout);
+			})
+			.then(res, rej);
+	});
+}
+
+export function preventUnsettledIterable<T, TReturn, TNext>(signal: AbortSignal, message: string, iterable: AsyncIterable<T, TReturn, TNext>): AsyncIterableIterator<T, TReturn, TNext> {
+	const originalIterator = iterable[Symbol.asyncIterator]();
+	const iterator = {
+		next: (...args: [] | [TNext]) => preventUnsettled(signal, message, originalIterator.next(...args)),
+	} as AsyncIterableIterator<T, TReturn, TNext>;
+	if (originalIterator.return != null) {
+		iterator.return = (value?: TReturn | PromiseLike<TReturn>) => preventUnsettled(signal, message, originalIterator.return!(value));
+	}
+	if (originalIterator.throw != null) {
+		iterator.throw = (err?: unknown) => preventUnsettled(signal, message, originalIterator.throw!(err));
+	}
+	iterator[Symbol.asyncIterator] = () => iterator;
+	return iterator;
 }

@@ -1,6 +1,6 @@
 import * as DT from "../discord-api/types.js";
 import { Account } from "./accounts.js";
-import { CachedChannel, CachedGuild, GuildAccountData } from "./cache.js";
+import { CachedTextLikeChannel, CachedGuild, GuildAccountData } from "./cache.js";
 
 // Adapted from <https://github.com/discord/discord-api-docs/blob/aff1236f0e36b4e52b98cdc487b31c4ee52ab14e/docs/topics/Permissions.md?plain=1#L112-L157>
 
@@ -21,7 +21,7 @@ export function computeGuildPermissions(account: Account, guild: CachedGuild, ac
 	}
 }
 
-export function computeChannelPermissions(account: Account, guild: CachedGuild, channel: CachedChannel, accountData?: GuildAccountData | undefined): bigint {
+export function computeChannelPermissions(account: Account, guild: CachedGuild, channel: CachedTextLikeChannel, accountData?: GuildAccountData): bigint {
 	accountData ??= guild.accountData.get(account)!;
 	const guildPermissions = accountData.guildPermissions;
 

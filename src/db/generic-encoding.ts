@@ -396,7 +396,7 @@ function encodeValue(type: ValueType, nullValue: NullValue | undefined, value: a
 
 	switch (type) {
 		case ValueType.String:
-		case ValueType.BigInteger: // better-sqlite3 converts strings to numbers
+		case ValueType.BigInteger:
 		case ValueType.Float:
 			return value;
 		case ValueType.Integer:

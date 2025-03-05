@@ -1,4 +1,4 @@
-import { abortError } from "../util/abort.js";
+import { abortError, preventUnsettled } from "../util/abort.js";
 import { extendAbortSignal, timeout } from "../util/abort.js";
 import { isFetchAbortError } from "../util/http.js";
 import log from "../util/log.js";
@@ -24,6 +24,7 @@ export type RequestResult<T> = {
 	rateLimitReset: Promise<void> | undefined;
 };
 
+// TODO: Always handle rate limits based on the bucket
 export async function apiReq<T>(endpoint: string, options?: RequestInit, abortIfFail = false): Promise<RequestResult<T>> {
 	log.debug?.(
 		`Requesting ${endpoint} %o`,
@@ -39,15 +40,15 @@ export async function apiReq<T>(endpoint: string, options?: RequestInit, abortIf
 	});
 	while (true) {
 		try {
-			const response = await fetch(request);
+			const response = await preventUnsettled(controller.signal, "REST/fetch()", fetch(request));
 			if (response.status === 429) {
 				const scope = response.headers.get("X-RateLimit-Scope");
 				if (scope !== "shared") {
-					log.warning?.(`Unexpectedly exceeded ${scope === "user" ? "the per-route" : scope === "global" ? "the global" : "an unknown"} rate limit while requesting ${request.method} ${request.url}.`);
+					log.warning?.(`Unexpectedly exceeded ${scope === "user" ? "the per-route" : scope === "global" ? "the global" : "an unknown"} rate limit while requesting ${request.method} ${request.url} (bucket ${response.headers.get("X-RateLimit-Bucket")}).`);
 				}
 				let retryAfter: number | undefined = undefined;
 				try {
-					const data = await response.json();
+					const data = await preventUnsettled(controller.signal, "REST/response.json()", response.json());
 					if (
 						typeof data === "object" &&
 						data !== null &&
@@ -64,17 +65,22 @@ export async function apiReq<T>(endpoint: string, options?: RequestInit, abortIf
 				const rateLimitReset =
 					!response.headers.has("X-RateLimit-Remaining") ? undefined :
 					response.headers.get("X-RateLimit-Remaining") !== "0" ? Promise.resolve() :
-					timeout(Number.parseFloat(response.headers.get("X-RateLimit-Reset-After")!) * 1000, options?.signal);
+					timeout(Number.parseFloat(response.headers.get("X-RateLimit-Reset-After")!) * 1000, options?.signal).catch(() => {});
 
 				let data: T | undefined = undefined;
 				if (abortIfFail && !response.ok) {
 					log.debug?.(`Got response from ${endpoint}: ${response.status} ${response.statusText} %o [aborted]`, response.headers);
 					controller.abort();
 				} else {
-					if (response.ok) {
-						data = await response.json() as T;
-						log.debug?.(`Got response from ${endpoint}: ${response.status} ${response.statusText} %o %o`, response.headers, data);
+					try {
+						data = await preventUnsettled(controller.signal, "REST/response.json()", response.json()) as T;
+					} catch (err) {
+						if (response.ok || !(err instanceof SyntaxError)) {
+							throw err; // Will be caught by the outer try catch statement
+						}
+						// JSON parsing error on unsuccessful response; leave `data` undefined
 					}
+					log.debug?.(`Got response from ${endpoint}: ${response.status} ${response.statusText} %o %o`, response.headers, data);
 				}
 				return { response, data, rateLimitReset };
 			}

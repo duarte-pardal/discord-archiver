@@ -136,6 +136,9 @@ export class GatewayConnection<GT extends GatewayTypes = GatewayTypes> extends E
 		const ws = new WebSocket(this.#url, { headers: this.#headers });
 		this.#ws = ws;
 		ws.on("message", (data, isBinary) => {
+			if (this.#state === ConnectionState.Destroyed) {
+				return;
+			}
 			const buffer =
 				data instanceof Array ? Buffer.concat(data) :
 				data instanceof ArrayBuffer ? Buffer.from(data) :
@@ -253,7 +256,6 @@ export class GatewayConnection<GT extends GatewayTypes = GatewayTypes> extends E
 		this.#ws!.send(this.#encodePayload!(payload));
 	}
 	async sendPayload(payload: DT.GatewaySendPayload): Promise<void> {
-		// BUG: Both of these errors happen sometimes when exiting the archiver.
 		if (this.#state !== ConnectionState.Ready) throw new Error("The connection isn't ready yet");
 		if (this.#ws === undefined) throw new Error("There is currently no connection");
 		this.#sendPayload(payload);

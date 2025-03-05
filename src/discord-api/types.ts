@@ -801,6 +801,10 @@ export type GuildStageChannel = ChannelCommonFields<ChannelType.GuildStageVoice>
 export type GuildForumChannel = ChannelCommonFields<ChannelType.GuildForum> & GuildChannelFields & ForumChannelFields;
 export type GuildMediaChannel = ChannelCommonFields<ChannelType.GuildMedia> & GuildChannelFields & ForumChannelFields;
 
+export type DirectChannel =
+	DMChannel |
+	GroupDMChannel;
+
 export type GuildChannel =
 	GuildTextChannel |
 	GuildVoiceChannel |
@@ -816,10 +820,9 @@ export type Thread =
 	PrivateThread;
 
 export type Channel =
-	Thread |
+	DirectChannel |
 	GuildChannel |
-	DMChannel |
-	GroupDMChannel;
+	Thread;
 
 export type ThreadMember = {
 	/** Thread ID */
@@ -828,6 +831,31 @@ export type ThreadMember = {
 	join_timestamp: string;
 	flags: number;
 };
+
+export function isDirectChannel(channel: Channel): channel is DirectChannel {
+	return (
+		channel.type === ChannelType.DM ||
+		channel.type === ChannelType.GroupDM
+	);
+}
+export function isGuildChannel(channel: Channel): channel is GuildChannel {
+	return (
+		channel.type === ChannelType.GuildText ||
+		channel.type === ChannelType.GuildVoice ||
+		channel.type === ChannelType.GuildCategory ||
+		channel.type === ChannelType.GuildAnnouncement ||
+		channel.type === ChannelType.GuildStageVoice ||
+		channel.type === ChannelType.GuildForum ||
+		channel.type === ChannelType.GuildMedia
+	);
+}
+export function isThread(channel: Channel): channel is Thread {
+	return (
+		channel.type === ChannelType.AnnouncementThread ||
+		channel.type === ChannelType.PublicThread ||
+		channel.type === ChannelType.PrivateThread
+	);
+}
 
 //#endregion
 
@@ -1324,9 +1352,10 @@ export type GatewayReadyDispatchPayloadBot = GatewayGenericDispatchPayload<"READ
 		flags: number;
 	};
 }>;
-export type GatewayChannelCreateDispatchPayload = GatewayGenericDispatchPayload<"CHANNEL_CREATE", Channel>;
-export type GatewayChannelUpdateDispatchPayload = GatewayGenericDispatchPayload<"CHANNEL_UPDATE", Channel>;
-export type GatewayChannelDeleteDispatchPayload = GatewayGenericDispatchPayload<"CHANNEL_DELETE", Channel>;
+export type GatewayChannelDispatchChannel = GuildChannel | DirectChannel;
+export type GatewayChannelCreateDispatchPayload = GatewayGenericDispatchPayload<"CHANNEL_CREATE", GatewayChannelDispatchChannel>;
+export type GatewayChannelUpdateDispatchPayload = GatewayGenericDispatchPayload<"CHANNEL_UPDATE", GatewayChannelDispatchChannel>;
+export type GatewayChannelDeleteDispatchPayload = GatewayGenericDispatchPayload<"CHANNEL_DELETE", GatewayChannelDispatchChannel>;
 export type GatewayThreadListSyncDispatchPayload = GatewayGenericDispatchPayload<"THREAD_LIST_SYNC", {
 	guild_id: string;
 	channel_ids: string[];

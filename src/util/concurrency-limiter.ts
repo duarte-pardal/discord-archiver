@@ -14,7 +14,7 @@ export class ConcurrencyLimiter {
 	 * Queues a callback to run. If the abort signal is fired before the callback is called, the
 	 * callback will be removed from the queue. Returns the promise returned by the callback.
 	 */
-	runWhenFree<T>(callback: () => Promise<T>, abortSignal?: AbortSignal | null | undefined): Promise<T> {
+	runWhenFree<T>(callback: () => Promise<T>, abortSignal?: AbortSignal | null): Promise<T> {
 		return new Promise<T>((resolve) => {
 			const runNow = () => {
 				const promise = callback();

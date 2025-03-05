@@ -33,7 +33,7 @@ CREATE TABLE latest_user_snapshots (
 	public_flags INTEGER -- the public flags on a user's account
 );
 CREATE TABLE previous_user_snapshots (
-	id INTEGER NOT NULL,
+	id INTEGER NOT NULL REFERENCES latest_user_snapshots (id),
 	_timestamp INTEGER NOT NULL,
 	username TEXT NOT NULL, -- the user's username, not unique across the platform
 	discriminator TEXT, -- the user's 4-digit discord-tag, NULL if the user has none (represented as "0" in the API)
@@ -42,14 +42,6 @@ CREATE TABLE previous_user_snapshots (
 	avatar_decoration BLOB, -- the user's avatar decoration hash
 	-- banner BLOB, -- the user's banner hash
 	public_flags INTEGER, -- the public flags on a user's account
-	PRIMARY KEY (id, _timestamp)
-) WITHOUT ROWID;
--- Because presences are updated very often, the presence updates are stored in a separate table.
--- If there are no records here for a specific user, then that user has never been seen online.
-CREATE TABLE user_presence_snapshots (
-	id INTEGER NOT NULL, -- user ID
-	_timestamp INTEGER NOT NULL,
-	client_status BLOB, -- the encoded status of the user
 	PRIMARY KEY (id, _timestamp)
 ) WITHOUT ROWID;
 
@@ -92,7 +84,7 @@ CREATE TABLE latest_guild_snapshots (
 );
 CREATE TABLE previous_guild_snapshots (
 	_timestamp INTEGER NOT NULL, -- when this snapshot was taken
-	id INTEGER NOT NULL,
+	id INTEGER NOT NULL REFERENCES latest_guild_snapshots (id),
 	name TEXT, -- guild name (2-100 characters, excluding trailing and leading whitespace)
 	icon BLOB, -- icon hash
 	splash BLOB, -- splash hash
@@ -129,7 +121,7 @@ CREATE TABLE previous_guild_snapshots (
 CREATE TABLE latest_role_snapshots (
 	id INTEGER NOT NULL PRIMARY KEY,
 	_deleted INTEGER,
-	_guild_id INTEGER NOT NULL, -- the ID of the guild
+	_guild_id INTEGER NOT NULL REFERENCES latest_guild_snapshots (id), -- the ID of the guild
 	managed INTEGER NOT NULL, -- whether this role is managed by an integration
 	tags__bot_id INTEGER, -- the ID of the bot this role belongs to
 	tags__premium_subscriber INTEGER, -- whether this is the guild's Booster role
@@ -151,7 +143,7 @@ CREATE TABLE latest_role_snapshots (
 );
 CREATE INDEX role_by_guild_id ON latest_role_snapshots (_guild_id);
 CREATE TABLE previous_role_snapshots (
-	id INTEGER NOT NULL,
+	id INTEGER NOT NULL REFERENCES latest_role_snapshots (id),
 	_timestamp INTEGER NOT NULL,
 	name TEXT NOT NULL, -- role name
 	color INTEGER NOT NULL, -- integer representation of hexadecimal color code
@@ -173,8 +165,8 @@ CREATE TABLE previous_role_snapshots (
 -- Since members can leave and join again, there's no _deleted column. Instead, when a user leaves
 -- a guild, a special snapshot is saved with joined_at set to NULL.
 CREATE TABLE latest_member_snapshots (
-	_user_id INTEGER NOT NULL,
-	_guild_id INTEGER NOT NULL,
+	_user_id INTEGER NOT NULL REFERENCES latest_user_snapshots (id),
+	_guild_id INTEGER NOT NULL REFERENCES latest_guild_snapshots (id),
 	---
 	_timestamp INTEGER NOT NULL,
 	nick TEXT, -- this user's guild nickname
@@ -201,7 +193,8 @@ CREATE TABLE previous_member_snapshots (
 	-- mute INTEGER, -- whether the user is muted in voice channels
 	pending INTEGER, -- whether the user has not yet passed the guild's Membership Screening requirements
 	communication_disabled_until INTEGER, -- when the user's timeout will expire and the user will be able to communicate in the guild again, null or a time in the past if the user is not timed out
-	PRIMARY KEY (_user_id, _guild_id, _timestamp)
+	PRIMARY KEY (_user_id, _guild_id, _timestamp),
+	FOREIGN KEY (_user_id, _guild_id) REFERENCES latest_member_snapshots (_user_id, _guild_id)
 ) WITHOUT ROWID;
 
 
@@ -242,7 +235,7 @@ CREATE TABLE latest_channel_snapshots (
 );
 CREATE INDEX channel_by_guild_id ON latest_channel_snapshots (guild_id) WHERE guild_id IS NOT NULL;
 CREATE TABLE previous_channel_snapshots (
-	id INTEGER NOT NULL,
+	id INTEGER NOT NULL REFERENCES latest_channel_snapshots (id),
 	_timestamp INTEGER NOT NULL,
 	position INTEGER, -- sorting position of the channel
 	permission_overwrites BLOB, -- explicit permission overwrites for members and roles
@@ -277,7 +270,7 @@ CREATE TABLE previous_channel_snapshots (
 CREATE TABLE latest_forum_tag_snapshots (
 	id INTEGER NOT NULL PRIMARY KEY,
 	_deleted INTEGER,
-	channel_id INTEGER, -- the ID of the forum channel
+	channel_id INTEGER REFERENCES latest_channel_snapshots (id), -- the ID of the forum channel
 	---
 	_timestamp INTEGER NOT NULL,
 	name TEXT NOT NULL, -- the name of the tag (0-20 characters)
@@ -285,7 +278,7 @@ CREATE TABLE latest_forum_tag_snapshots (
 	emoji -- custom emoji ID (INTEGER) or Unicode emoji (TEXT)
 );
 CREATE TABLE previous_forum_tag_snapshots (
-	id INTEGER NOT NULL,
+	id INTEGER NOT NULL REFERENCES latest_forum_tag_snapshots (id),
 	_timestamp INTEGER NOT NULL,
 	name TEXT NOT NULL, -- the name of the tag (0-20 characters)
 	moderated INTEGER NOT NULL, -- whether this tag can only be added to or removed from threads by a member with the MANAGE_THREADS permission
@@ -298,11 +291,11 @@ CREATE TABLE previous_forum_tag_snapshots (
 
 -- You can determine whether a message is from a webhook by comparing author__id with
 -- 281474976710656 (2^48): if author__id is smaller, then it refers to a webhook user in
--- webhook__users; it it's bigger, then it refers to a normal user.
+-- webhook_users; if it's bigger, then it refers to a normal user.
 CREATE TABLE latest_message_snapshots (
 	id INTEGER NOT NULL PRIMARY KEY,
 	_deleted INTEGER,
-	channel_id INTEGER NOT NULL, -- ID of the channel the message was sent in
+	channel_id INTEGER NOT NULL REFERENCES latest_channel_snapshots (id), -- ID of the channel the message was sent in
 	author__id INTEGER NOT NULL, -- ID of the user who sent the message or internal ID of the webhook user
 	tts INTEGER NOT NULL, -- whether this was a TTS message
 	mention_everyone INTEGER NOT NULL, -- whether this message mentions everyone
@@ -340,7 +333,7 @@ CREATE TRIGGER latest_message_snapshots_au AFTER UPDATE ON latest_message_snapsh
   INSERT INTO message_fts_index (rowid, content) VALUES (new.id, new.content);
 END;
 CREATE TABLE previous_message_snapshots (
-	id INTEGER NOT NULL,
+	id INTEGER NOT NULL REFERENCES latest_message_snapshots (id),
 	_timestamp INTEGER NOT NULL, -- edited_timestamp if the message was edited, 0 if not. The least significant bit is just the least significant bit of the timestamp.
 	content TEXT, -- contents of the message
 	flags INTEGER, -- message flags combined as a bitfield
@@ -380,7 +373,7 @@ CREATE TABLE reactions (
 	message_id INTEGER NOT NULL REFERENCES latest_message_snapshots (id),
 	emoji NOT NULL, -- custom emoji ID (INTEGER) or Unicode emoji (TEXT)
 	type INTEGER NOT NULL, -- 0 for normal reactions, 1 for super reactions
-	user_id INTEGER NOT NULL,
+	user_id INTEGER NOT NULL REFERENCES latest_user_snapshots (id),
 	start INTEGER NOT NULL, -- when this reaction was added, in _timestamp format, or 0 if the reaction was already there when the message was first archived
 	end INTEGER -- when this reaction was removed, in _timestamp format, or NULL if it wasn't
 );
