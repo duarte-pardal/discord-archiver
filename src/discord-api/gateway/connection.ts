@@ -252,6 +252,8 @@ export class GatewayConnection<GT extends GatewayTypes = GatewayTypes> extends E
 
 	async #sendPayload(payload: DT.GatewaySendPayload) {
 		await this.#sendPayloadRateLimiter!.whenFree();
+		if (this.#state === ConnectionState.Destroyed) return;
+		// TODO: We need a queue because we can get disconnected while waiting for the rate limiter.
 		this.emit("payloadSent", payload);
 		this.#ws!.send(this.#encodePayload!(payload));
 	}

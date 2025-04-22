@@ -1,13 +1,13 @@
 import { setProgress } from "../util/progress-display.js";
-import { CachedTextLikeChannel, ThreadInfo } from "./cache.js";
+import { CachedTextLikeChannel, CachedThread } from "./cache.js";
 
 export type MessageSyncProgress = {
 	progress: number | null;
-	channel: CachedTextLikeChannel | ThreadInfo;
+	channel: CachedTextLikeChannel | CachedThread;
 };
 export type ArchivedThreadSyncProgress = {
 	progress: null;
-	channel: CachedTextLikeChannel | ThreadInfo;
+	channel: CachedTextLikeChannel | CachedThread;
 };
 // TODO: Add member list sync progress
 export type SyncProgress = MessageSyncProgress | ArchivedThreadSyncProgress;

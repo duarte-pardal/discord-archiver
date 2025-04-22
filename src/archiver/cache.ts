@@ -2,17 +2,17 @@ import * as DT from "../discord-api/types.js";
 import { Account } from "./accounts.js";
 import { ChannelOptions, getChannelOptions, getThreadOptions, GuildOptions, ParsedConfig } from "./config.js";
 
-/** Temporary data structure used only for syncing threads */
-export type ThreadInfo = {
+export type CachedThread = {
 	id: string;
 	options: ChannelOptions;
 	name: string;
+	guild: CachedGuild | null;
 	parent: CachedTextLikeChannel;
 	private: boolean;
-	syncInfo: {
-		lastMessageID: string | null;
-		messageCount: number | null;
-	};
+	/** ID of the latest message. Used for estimating the remaining sync time. */
+	lastMessageID: string | null;
+	/** Approximate message count */
+	messageCount: number | null;
 };
 export type CachedSimpleChannel = {
 	id: string;
@@ -27,8 +27,8 @@ export type CachedTextLikeChannel = {
 	type: DT.ChannelType.GuildAnnouncement | DT.ChannelType.GuildForum |	DT.ChannelType.GuildText | DT.ChannelType.GuildVoice;
 	/** `null` if and only if this is a DM channel. */
 	textLike: true;
-	guild: CachedGuild | null;
 	name: string;
+	guild: CachedGuild | null;
 	/** The permission overwrite bitfield for each role */
 	permissionOverwrites: Map<string, { allow: bigint; deny: bigint }>;
 	/** Accounts with the READ_MESSAGE_HISTORY and VIEW_CHANNEL permissions */
@@ -36,15 +36,9 @@ export type CachedTextLikeChannel = {
 	/** Accounts with the READ_MESSAGE_HISTORY, MANAGE_THREADS and VIEW_CHANNEL permissions */
 	accountsWithManageThreadsPermission: Set<Account>;
 	parent: null;
-	/** Data used for syncing, set to null after it's not needed anymore. */
-	syncInfo: {
-		lastMessageID: string | null;
-		messageCount: number | null;
-		/** The active threads found in the ready payload */
-		activeThreads: Set<ThreadInfo>;
-	} | null;
+	/** ID of the latest message. Used for estimating the remaining sync time. */
+	lastMessageID: string | null;
 };
-export type CachedTextLikeChannelWithSyncInfo = CachedTextLikeChannel & { syncInfo: NonNullable<CachedTextLikeChannel["syncInfo"]> };
 export type CachedChannel = CachedSimpleChannel | CachedTextLikeChannel;
 
 export type GuildAccountData = {
@@ -62,6 +56,8 @@ export type CachedGuild = {
 	rolePermissions: Map<string, bigint>;
 	accountData: Map<Account, GuildAccountData>;
 	channels: Map<string, CachedChannel>;
+	/** The active threads found in the ready payload */
+	activeThreads: Map<string, CachedThread>;
 	memberUserIDs: Set<bigint> | null;
 	/**
 	 * Resolved when the guild is stored in the database. This is needed because the initial sync
@@ -100,11 +96,7 @@ export function createCachedChannel(channel: DT.Channel, config: ParsedConfig, c
 			accountsWithReadPermission: new Set(),
 			accountsWithManageThreadsPermission: new Set(),
 			parent: null,
-			syncInfo: {
-				activeThreads: new Set(),
-				lastMessageID: channel.type === DT.ChannelType.GuildVoice ? null : (channel.last_message_id ?? null),
-				messageCount: null,
-			},
+			lastMessageID: channel.type === DT.ChannelType.GuildVoice ? null : (channel.last_message_id ?? null),
 		};
 	} else {
 		return {
@@ -117,20 +109,19 @@ export function createCachedChannel(channel: DT.Channel, config: ParsedConfig, c
 	}
 }
 
-export function extractThreadInfo(thread: DT.Thread, config: ParsedConfig, parent: CachedTextLikeChannel): ThreadInfo {
+export function extractThreadInfo(thread: DT.Thread, config: ParsedConfig, parent: CachedTextLikeChannel): CachedThread {
 	return {
 		id: thread.id,
 		options: getThreadOptions(config, thread.id, parent.options),
 		name: thread.name,
+		guild: parent.guild,
 		parent,
 		private: thread.type === DT.ChannelType.PrivateThread,
-		syncInfo: {
-			lastMessageID: thread.last_message_id ?? null,
-			messageCount: (
-				BigInt(thread.id) < 992580363878400000n && (thread.message_count === undefined || thread.message_count >= 50) ?
-					thread.total_message_sent :
-					thread.message_count
-			) ?? null,
-		},
+		lastMessageID: thread.last_message_id ?? null,
+		messageCount: (
+			BigInt(thread.id) < 992580363878400000n && (thread.message_count === undefined || thread.message_count >= 50) ?
+				thread.total_message_sent :
+				thread.message_count
+		) ?? null,
 	};
 }

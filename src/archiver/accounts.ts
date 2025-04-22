@@ -1,5 +1,5 @@
 import { GatewayConnection, GatewayTypes } from "../discord-api/gateway/connection.js";
-import { CachedTextLikeChannel, ThreadInfo } from "./cache.js";
+import { CachedTextLikeChannel, CachedThread } from "./cache.js";
 import { RequestResult } from "../discord-api/rest.js";
 
 export type OngoingOperation = {
@@ -7,7 +7,7 @@ export type OngoingOperation = {
 	end: Promise<void>;
 };
 export type OngoingMessageSync = OngoingOperation & {
-	channel: CachedTextLikeChannel | ThreadInfo;
+	channel: CachedTextLikeChannel | CachedThread;
 };
 
 export type AccountOptions = {

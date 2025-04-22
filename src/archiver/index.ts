@@ -1,6 +1,5 @@
 import { setProgress } from "../util/progress-display.js";
 
-// Node.js sometimes doesn't show the rejection reason if it's not an instance of Error
 process.on("uncaughtExceptionMonitor", () => {
 	setProgress();
 	console.error("ERROR: An unexpected error happened! Please report this.");
@@ -17,7 +16,7 @@ import { parseArgs, ParseArgsConfig } from "node:util";
 import log from "../util/log.js";
 import { getTag } from "../discord-api/tag.js";
 import { RateLimiter } from "../util/rate-limiter.js";
-import { CachedTextLikeChannel, CachedTextLikeChannelWithSyncInfo, CachedGuild, createCachedChannel, extractThreadInfo, guilds, isGuildTextLikeChannel, ThreadInfo, CachedChannel, dmChannels as directChannels } from "./cache.js";
+import { CachedTextLikeChannel, CachedGuild, createCachedChannel, extractThreadInfo, guilds, isGuildTextLikeChannel, CachedThread, CachedChannel, dmChannels as directChannels } from "./cache.js";
 import { Account, AccountOptions, accounts, getLeastGatewayOccupiedAccount, getLeastRESTOccupiedAccount, OngoingOperation } from "./accounts.js";
 import { ArchivedThreadSyncProgress, downloadProgresses, MessageSyncProgress, progressCounts, startProgressDisplay, stopProgressDisplay, updateProgressOutput } from "./progress.js";
 import { DownloadArguments, getCDNHashURL, getDownloadTransactionFunction, normalizeURL } from "./files.js";
@@ -25,7 +24,7 @@ import { mergeOptions } from "../util/http.js";
 import { mapIterator } from "../util/iterators.js";
 import { setMaxListeners } from "node:events";
 import { FileStore } from "../db/file-store.js";
-import { getGuildOptions, isFileStoreNeeded, parseConfig, ParsedConfig } from "./config.js";
+import { getGuildOptions, isFileStoreNeeded, MessageOptions, parseConfig, ParsedConfig } from "./config.js";
 import { readFile } from "node:fs/promises";
 import { ZodError } from "zod";
 
@@ -139,15 +138,136 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 
 	let allReady = false;
 
-	// SYNCING
 
+	// ARCHIVING
+
+	function extractMessageFiles(message: DT.Message, options: MessageOptions): DownloadArguments[] {
+		const files: DownloadArguments[] = [];
+		if (options.downloadAttachments) {
+			for (const attachment of message.attachments) {
+				const normalizedURL = normalizeURL(attachment.url);
+				files.push({ url: normalizedURL, downloadURL: attachment.url });
+			}
+		}
+		for (const embed of message.embeds) {
+			if (options.downloadEmbeddedImages) {
+				if (embed.footer?.icon_url != undefined && embed.footer.proxy_icon_url != undefined) {
+					files.push({ url: normalizeURL(embed.footer.icon_url), downloadURL: embed.footer.proxy_icon_url });
+				}
+				if (embed.image?.url != undefined && embed.image.proxy_url != undefined) {
+					files.push({ url: normalizeURL(embed.image.url), downloadURL: embed.image.proxy_url });
+				}
+				if (embed.thumbnail?.url != undefined && embed.thumbnail.proxy_url != undefined) {
+					files.push({ url: normalizeURL(embed.thumbnail.url), downloadURL: embed.thumbnail.proxy_url });
+				}
+				if (embed.author?.icon_url != undefined && embed.author.proxy_icon_url != undefined) {
+					files.push({ url: normalizeURL(embed.author.icon_url), downloadURL: embed.author.proxy_icon_url });
+				}
+			}
+			if (options.downloadEmbeddedVideos) {
+				if (embed.video?.url != undefined && embed.video.proxy_url != undefined) {
+					files.push({ url: normalizeURL(embed.video.url), downloadURL: embed.video.proxy_url });
+				}
+			}
+		}
+		if (message.author.avatar != null && options.downloadAuthorAvatars) {
+			const avatarURL = getCDNHashURL(`/avatars/${message.author.id}`, message.author.avatar, config.mediaConfig.avatar, config.mediaConfig.animatedAvatar);
+			files.push({ url: avatarURL, downloadURL: avatarURL });
+		}
+		return files;
+	}
+
+	async function archiveMessageSnapshot(
+		account: Account,
+		message: DT.Message,
+		cachedChannel: CachedTextLikeChannel | CachedThread,
+		abortSignal: AbortSignal,
+		includeReactions: boolean,
+		files = extractMessageFiles(message, cachedChannel.options),
+	) {
+		const restOptions = mergeOptions(account.restOptions, { signal: abortSignal });
+
+		const reactions: {
+			emoji: DT.PartialEmoji;
+			reactionType: 0 | 1;
+			userIDs: string[];
+		}[] = [];
+
+		if (includeReactions && message.reactions != null) {
+			for (const reaction of message.reactions) {
+				for (const [reactionType, expectedCount] of [
+					...(reaction.count_details.normal > 0 ? [[0, reaction.count_details.normal]] : []),
+					...(reaction.count_details.burst > 0 ? [[1, reaction.count_details.burst]] : []),
+				] as [0 | 1, number][]) {
+					const reactionData = {
+						emoji: reaction.emoji,
+						reactionType,
+						userIDs: new Array<string>(expectedCount),
+					};
+					let i = 0;
+					const emoji = reaction.emoji.id === null ? reaction.emoji.name : `${reaction.emoji.name}:${reaction.emoji.id}`;
+
+					let userID = "0";
+					let rateLimitReset;
+					while (true) {
+						await rateLimitReset;
+						let response, data: DT.PartialUser[] | undefined;
+						({ response, data, rateLimitReset } = await account.request<DT.PartialUser[]>(`/channels/${cachedChannel.id}/messages/${message.id}/reactions/${emoji}?limit=100&type=${reactionType}&after=${userID}`, restOptions, true));
+						if (abortSignal.aborted) throw abortError;
+						if (!response.ok) {
+							throw new Error(`Got HTTP ${response.status} ${response.statusText} while requesting reactions for the message with ID ${message.id} from #${cachedChannel.name}`);
+						}
+						const users = data!;
+
+						for (const user of users) {
+							reactionData.userIDs[i] = user.id;
+							i++;
+						}
+
+						if (users.length < 100) {
+							break;
+						}
+						userID = users.at(-1)!.id;
+					}
+					reactions.push(reactionData);
+
+					if (i !== expectedCount) {
+						log.verbose?.(`The reaction count (${expectedCount}) is different from the length of the list (${i}) of users who reacted to the message with ID ${message.id} from #${cachedChannel.name} (${cachedChannel.id}).`);
+					}
+				}
+			}
+		}
+
+		let messageAddPromise: Promise<AddSnapshotResult>;
+		await doDownloadTransaction(abortSignal, files, async () => {
+			messageAddPromise = db.request({
+				type: RequestType.AddMessageSnapshot,
+				message: message,
+			});
+			for (const reactionData of reactions) {
+				db.request({
+					type: RequestType.AddInitialReactions,
+					messageID: message.id,
+					emoji: reactionData.emoji,
+					reactionType: reactionData.reactionType,
+					userIDs: reactionData.userIDs,
+					timing: null,
+				});
+			}
+		});
+		return await messageAddPromise!;
+	}
+
+	// SYNCING
 
 	// TODO: This can be optimized. We don't need to wait for all reactions/files from the previous
 	// message to be downloaded to start downloading the ones from the next message.
-	async function syncMessages(account: Account, channel: CachedTextLikeChannel | ThreadInfo): Promise<void> {
-		if (!(channel.options.archiveMessages && channel.options.requestPastMessages)) return;
+	async function syncMessages(account: Account, channel: CachedTextLikeChannel | CachedThread): Promise<void> {
+		const options = channel.options;
+		if (!(options.archiveMessages && options.requestPastMessages)) return;
 
-		const lastMessageID = channel.syncInfo?.lastMessageID;
+		const lastMessageID = channel.lastMessageID;
+		channel.lastMessageID = null;
 		const parentChannel = channel.parent ?? channel;
 
 		const abortController = new AbortController();
@@ -172,6 +292,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 
 		try {
 			// Check if it is necessary to sync this channel based on last_message_id and the id of the last stored message
+			// TODO: Don't check this when switching accounts
 			const lastStoredMessageID = await db.request({ type: RequestType.GetLastMessageID, channelID: channel.id });
 			if (!(lastMessageID == null || lastStoredMessageID == null || lastStoredMessageID < BigInt(lastMessageID))) {
 				return;
@@ -224,7 +345,6 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 					messageID = messages[0].id;
 
 					let lastMessageAddPromise: Promise<AddSnapshotResult>;
-					let rateLimitReset: Promise<void> | undefined;
 					let i: number;
 					let simpleMessagesStartIndex: number = messages.length - 1;
 
@@ -247,117 +367,22 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 					for (i = messages.length - 1; i >= 0; i--) {
 						const message = messages[i];
 
-						// Download files, including attachments and embedded media
-						const files: DownloadArguments[] = [];
-						if (channel.options.downloadAttachments) {
-							for (const attachment of message.attachments) {
-								const normalizedURL = normalizeURL(attachment.url);
-								files.push({ url: normalizedURL, downloadURL: attachment.url });
-							}
-						}
-						for (const embed of message.embeds) {
-							if (channel.options.downloadEmbeddedImages) {
-								if (embed.footer?.icon_url != undefined && embed.footer.proxy_icon_url != undefined) {
-									files.push({ url: normalizeURL(embed.footer.icon_url), downloadURL: embed.footer.proxy_icon_url });
-								}
-								if (embed.image?.url != undefined && embed.image.proxy_url != undefined) {
-									files.push({ url: normalizeURL(embed.image.url), downloadURL: embed.image.proxy_url });
-								}
-								if (embed.thumbnail?.url != undefined && embed.thumbnail.proxy_url != undefined) {
-									files.push({ url: normalizeURL(embed.thumbnail.url), downloadURL: embed.thumbnail.proxy_url });
-								}
-								if (embed.author?.icon_url != undefined && embed.author.proxy_icon_url != undefined) {
-									files.push({ url: normalizeURL(embed.author.icon_url), downloadURL: embed.author.proxy_icon_url });
-								}
-							}
-							if (channel.options.downloadEmbeddedVideos) {
-								if (embed.video?.url != undefined && embed.video.proxy_url != undefined) {
-									files.push({ url: normalizeURL(embed.video.url), downloadURL: embed.video.proxy_url });
-								}
-							}
-						}
-						if (message.author.avatar != null && channel.options.downloadAuthorAvatars) {
-							const avatarURL = getCDNHashURL(`/avatars/${message.author.id}`, message.author.avatar, config.mediaConfig.avatar, config.mediaConfig.animatedAvatar);
-							files.push({ url: avatarURL, downloadURL: avatarURL });
-						}
+						const files = extractMessageFiles(message, options);
 
 						if (
-							(channel.options.reactionArchivalMode === "users" && message.reactions !== undefined && message.reactions.length !== 0) ||
+							(options.reactionArchivalMode === "users" && message.reactions !== undefined && message.reactions.length !== 0) ||
 							files.length > 0
 						) {
 							flushSimpleMessages();
 							simpleMessagesStartIndex = i - 1;
 
-							const reactions: {
-								emoji: DT.PartialEmoji;
-								reactionType: 0 | 1;
-								userIDs: string[];
-							}[] = [];
-
-							for (const reaction of message.reactions ?? []) {
-								for (const [reactionType, expectedCount] of [
-									...(reaction.count_details.normal > 0 ? [[0, reaction.count_details.normal]] : []),
-									...(reaction.count_details.burst > 0 ? [[1, reaction.count_details.burst]] : []),
-								] as [0 | 1, number][]) {
-									const reactionData = {
-										emoji: reaction.emoji,
-										reactionType,
-										userIDs: new Array<string>(expectedCount),
-									};
-									let i = 0;
-									const emoji = reaction.emoji.id === null ? reaction.emoji.name : `${reaction.emoji.name}:${reaction.emoji.id}`;
-
-									let userID = "0";
-									while (true) {
-										await rateLimitReset;
-										let response, data: DT.PartialUser[] | undefined;
-										({ response, data, rateLimitReset } = await account.request<DT.PartialUser[]>(`/channels/${channel.id}/messages/${message.id}/reactions/${emoji}?limit=100&type=${reactionType}&after=${userID}`, restOptions, true));
-										if (abortController.signal.aborted as boolean) throw abortError;
-										if (response.status === 403 || response.status === 404) {
-											// TODO: Maybe not ideal?
-											log.verbose?.(`Hanging message sync from #${channel.name} (${channel.id}) using ${account.name} because we got a ${response.status} ${response.statusText} response.`);
-											await waitForAbort(abortController.signal);
-											throw abortError;
-										} else if (!response.ok) {
-											log.warning?.(`Stopped syncing messages from #${channel.name} (${channel.id}) using ${account.name} because we got a ${response.status} ${response.statusText} response.`);
-											break main;
-										}
-										const users = data!;
-
-										for (const user of users) {
-											reactionData.userIDs[i] = user.id;
-											i++;
-										}
-
-										if (users.length < 100) {
-											break;
-										}
-										userID = users.at(-1)!.id;
-									}
-									reactions.push(reactionData);
-
-									if (i !== expectedCount) {
-										log.verbose?.(`The reaction count (${expectedCount}) is different from the length of the list (${i}) of users who reacted to the message with ID ${message.id} from #${channel.name} (${channel.id}).`);
-									}
-								}
+							try {
+								await archiveMessageSnapshot(account, message, channel, abortController.signal, true, files);
+							} catch (err) {
+								if (err === abortError) throw err;
+								log.warning?.(`Stopped syncing messages from #${channel.name} (${channel.id}) using ${account.name} because we got a ${response.status} ${response.statusText} response.`);
+								break main;
 							}
-
-							await doDownloadTransaction(abortController.signal, files, async () => {
-								lastMessageAddPromise = db.request({
-									type: RequestType.AddMessageSnapshot,
-									message,
-								});
-								for (const reactionData of reactions) {
-									db.request({
-										type: RequestType.AddInitialReactions,
-										messageID: message.id,
-										emoji: reactionData.emoji,
-										reactionType: reactionData.reactionType,
-										userIDs: reactionData.userIDs,
-										timing: null,
-									});
-								}
-							});
 
 							updateProgress(message.id, 1);
 						}
@@ -647,18 +672,26 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 				}
 				return cachedGuild;
 			}
-			function getGuildChannel(channelID: string, guildID: string, eventType: DT.DispatchEventName): CachedChannel | undefined {
+			function getGuildChannel(channelID: string, guildID: string, eventType: DT.DispatchEventName, includeThreads?: false): CachedChannel | undefined;
+			function getGuildChannel(channelID: string, guildID: string, eventType: DT.DispatchEventName, includeThreads?: boolean): CachedChannel | CachedThread | undefined;
+			function getGuildChannel(channelID: string, guildID: string, eventType: DT.DispatchEventName, includeThreads = false): CachedChannel | CachedThread | undefined {
 				const cachedGuild = guilds.get(guildID);
 				if (cachedGuild === undefined) {
 					log.warning?.(`Received a ${eventType} dispatch for a guild channel with ID ${channelID} from an unknown guild with ID ${guildID}.`);
 					return undefined;
 				}
 				const cachedChannel = cachedGuild.channels.get(channelID);
-				if (cachedChannel === undefined) {
+				if (cachedChannel !== undefined) return cachedChannel;
+				if (!includeThreads) {
 					log.warning?.(`Received a ${eventType} dispatch for an unknown guild channel with ID ${channelID} from the guild with ID ${guildID}.`);
 					return undefined;
 				}
-				return cachedChannel;
+				const cachedThread = cachedGuild.activeThreads.get(channelID);
+				if (cachedThread === undefined) {
+					log.warning?.(`Received a ${eventType} dispatch for an unknown guild channel or thread with ID ${channelID} from the guild with ID ${guildID}.`);
+					return undefined;
+				}
+				return cachedThread;
 			}
 			function getDirectChannel(channelID: string, eventType: DT.DispatchEventName): CachedChannel | undefined {
 				const cachedChannel = directChannels.get(channelID);
@@ -668,9 +701,9 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 				}
 				return cachedChannel;
 			}
-			function getChannelByIDs(channelID: string, guildID: string | undefined, eventType: DT.DispatchEventName) {
+			function getChannelOrThreadByIDs(channelID: string, guildID: string | undefined, eventType: DT.DispatchEventName) {
 				if (guildID !== undefined) {
-					return getGuildChannel(channelID, guildID, eventType);
+					return getGuildChannel(channelID, guildID, eventType, true);
 				} else {
 					return getDirectChannel(channelID, eventType);
 				}
@@ -821,6 +854,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 									rolePermissions,
 									accountData: new Map(),
 									channels: new Map(),
+									activeThreads: new Map(),
 									memberUserIDs: null,
 									initialSyncPromise,
 								};
@@ -829,8 +863,8 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 								);
 								guilds.set(guild.id, cachedGuild);
 								for (const thread of guild.threads) {
-									const parent = cachedGuild.channels.get(thread.parent_id) as CachedTextLikeChannelWithSyncInfo;
-									parent.syncInfo.activeThreads.add(extractThreadInfo(thread, config, parent));
+									const parent = cachedGuild.channels.get(thread.parent_id) as CachedTextLikeChannel;
+									cachedGuild.activeThreads.set(thread.id, extractThreadInfo(thread, config, parent));
 								}
 
 								cachedGuild.accountData.set(account, {
@@ -1152,6 +1186,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 								if (threadInfo.options.archiveThreads) {
 									threadsToArchive.push(thread);
 								}
+								cachedGuild.activeThreads.set(threadInfo.id, threadInfo);
 
 								sync:
 								if (allReady && threadInfo.options.archiveThreads && threadInfo.options.archiveMessages && threadInfo.options.requestPastMessages) {
@@ -1199,7 +1234,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 						case "MESSAGE_CREATE":
 						case "MESSAGE_UPDATE":
 						{
-							const cachedChannel = getChannelByIDs(payload.d.channel_id, payload.d.guild_id, payload.t);
+							const cachedChannel = getChannelOrThreadByIDs(payload.d.channel_id, payload.d.guild_id, payload.t);
 							if (cachedChannel === undefined) break;
 
 							if (
@@ -1211,17 +1246,12 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 								// receive a MESSAGE_CREATE event after the GUILD_CREATE or READY
 								// event but before the guild's data is in the database.
 								await cachedChannel.guild?.initialSyncPromise;
-								await db.transaction(async () => {
-									db.request({
-										type: RequestType.AddMessageSnapshot,
-										message: payload.d,
-									});
-								});
+								await archiveMessageSnapshot(account, payload.d, cachedChannel as CachedTextLikeChannel, abortController.signal, false);
 							}
 							break;
 						}
 						case "MESSAGE_DELETE": {
-							const cachedChannel = getChannelByIDs(payload.d.channel_id, payload.d.guild_id, payload.t);
+							const cachedChannel = getChannelOrThreadByIDs(payload.d.channel_id, payload.d.guild_id, payload.t);
 							if (cachedChannel === undefined) break;
 
 							if (cachedChannel.options.storeMessageEdits) {
@@ -1237,7 +1267,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 						}
 
 						case "MESSAGE_REACTION_ADD": {
-							const cachedChannel = getChannelByIDs(payload.d.channel_id, payload.d.guild_id, payload.t);
+							const cachedChannel = getChannelOrThreadByIDs(payload.d.channel_id, payload.d.guild_id, payload.t);
 							if (cachedChannel === undefined) break;
 
 							if (cachedChannel.options.reactionArchivalMode === "users") {
@@ -1256,7 +1286,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 							break;
 						}
 						case "MESSAGE_REACTION_REMOVE": {
-							const cachedChannel = getChannelByIDs(payload.d.channel_id, payload.d.guild_id, payload.t);
+							const cachedChannel = getChannelOrThreadByIDs(payload.d.channel_id, payload.d.guild_id, payload.t);
 							if (cachedChannel === undefined) break;
 
 							if (cachedChannel.options.reactionArchivalMode === "users") {
@@ -1277,7 +1307,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 						case "MESSAGE_REACTION_REMOVE_EMOJI":
 						case "MESSAGE_REACTION_REMOVE_ALL":
 						{
-							const cachedChannel = getChannelByIDs(payload.d.channel_id, payload.d.guild_id, payload.t);
+							const cachedChannel = getChannelOrThreadByIDs(payload.d.channel_id, payload.d.guild_id, payload.t);
 							if (cachedChannel === undefined) break;
 
 							if (cachedChannel.options.reactionArchivalMode === "users") {
@@ -1347,7 +1377,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 				await restRateLimiter.whenFree();
 				const result = await apiReq<T>(endpoint, options, abortIfFail);
 				if (result.response.status === 401) {
-					log.error?.(`Got HTTP status 401 Unauthorized while using ${account.name}. The authentication token has been revoked. This account will be disconnected.`);
+					log.error?.(`Got HTTP status 401 Unauthorized while using ${account.name}. The authentication token is no longer valid. This account will be disconnected.`);
 					// This will immediately abort all operations
 					account.disconnect();
 					if (accounts.size === 0) {
@@ -1500,6 +1530,10 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 				syncAllGuildMembers(getLeastGatewayOccupiedAccount(guild.accountData.keys())!, guild);
 			}
 
+			for (const thread of guild.activeThreads.values()) {
+				syncMessages(getLeastRESTOccupiedAccount(thread.parent.accountsWithReadPermission)!, thread);
+			}
+
 			for (const channel of guild.channels.values()) {
 				if (!channel.textLike) continue;
 
@@ -1515,15 +1549,10 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 								syncAllArchivedThreads(getLeastRESTOccupiedAccount(channel.accountsWithManageThreadsPermission)!, channel, ArchivedThreadListType.Private);
 							}
 
-							for (const thread of channel.syncInfo!.activeThreads) {
-								syncMessages(getLeastRESTOccupiedAccount(channel.accountsWithReadPermission)!, thread);
-							}
-
 							syncAllArchivedThreads(getLeastRESTOccupiedAccount(channel.accountsWithReadPermission)!, channel, ArchivedThreadListType.Public);
 						}
 					}
 				}
-				channel.syncInfo = null;
 			}
 		})();
 	}
