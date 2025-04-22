@@ -9,7 +9,7 @@ export type CachedThread = {
 	guild: CachedGuild | null;
 	parent: CachedTextLikeChannel;
 	private: boolean;
-	/** ID of the latest message. Used for estimating the remaining sync time. */
+	/** ID of the latest message. Used for determining whether to sync the channel and for estimating the remaining sync time. */
 	lastMessageID: string | null;
 	/** Approximate message count */
 	messageCount: number | null;
@@ -24,9 +24,9 @@ export type CachedSimpleChannel = {
 export type CachedTextLikeChannel = {
 	id: string;
 	options: ChannelOptions;
-	type: DT.ChannelType.GuildAnnouncement | DT.ChannelType.GuildForum |	DT.ChannelType.GuildText | DT.ChannelType.GuildVoice;
-	/** `null` if and only if this is a DM channel. */
+	type: DT.ChannelType.GuildText | DT.ChannelType.GuildVoice | DT.ChannelType.GuildAnnouncement | DT.ChannelType.GuildStageVoice | DT.ChannelType.GuildForum | DT.ChannelType.GuildMedia;
 	textLike: true;
+	hasThreads: boolean;
 	name: string;
 	guild: CachedGuild | null;
 	/** The permission overwrite bitfield for each role */
@@ -36,7 +36,7 @@ export type CachedTextLikeChannel = {
 	/** Accounts with the READ_MESSAGE_HISTORY, MANAGE_THREADS and VIEW_CHANNEL permissions */
 	accountsWithManageThreadsPermission: Set<Account>;
 	parent: null;
-	/** ID of the latest message. Used for estimating the remaining sync time. */
+	/** ID of the latest message. Used for determining whether to sync the channel and for estimating the remaining sync time. */
 	lastMessageID: string | null;
 };
 export type CachedChannel = CachedSimpleChannel | CachedTextLikeChannel;
@@ -69,14 +69,24 @@ export type CachedGuild = {
 export const guilds = new Map<string, CachedGuild>();
 export const dmChannels = new Map<string, CachedTextLikeChannel>();
 
-type GuildTextLikeChannel = DT.GuildAnnouncementChannel | DT.GuildForumChannel | DT.GuildTextChannel | DT.GuildVoiceChannel;
-
+type GuildTextLikeChannel = DT.GuildTextChannel | DT.GuildVoiceChannel | DT.GuildAnnouncementChannel | DT.GuildStageChannel | DT.GuildForumChannel | DT.GuildMediaChannel;
 export function isGuildTextLikeChannel(channel: DT.Channel): channel is GuildTextLikeChannel {
 	return (
+		channel.type === DT.ChannelType.GuildText ||
+		channel.type === DT.ChannelType.GuildVoice ||
+		channel.type === DT.ChannelType.GuildAnnouncement ||
+		channel.type === DT.ChannelType.GuildStageVoice ||
+		channel.type === DT.ChannelType.GuildForum ||
+		channel.type === DT.ChannelType.GuildMedia
+	);
+}
+type TextChannelWithThreads = DT.GuildTextChannel | DT.GuildAnnouncementChannel | DT.GuildForumChannel | DT.GuildMediaChannel;
+export function isChannelWithThreads(channel: DT.Channel): channel is TextChannelWithThreads {
+	return (
+		channel.type === DT.ChannelType.GuildText ||
 		channel.type === DT.ChannelType.GuildAnnouncement ||
 		channel.type === DT.ChannelType.GuildForum ||
-		channel.type === DT.ChannelType.GuildText ||
-		channel.type === DT.ChannelType.GuildVoice
+		channel.type === DT.ChannelType.GuildMedia
 	);
 }
 
@@ -90,13 +100,14 @@ export function createCachedChannel(channel: DT.Channel, config: ParsedConfig, c
 			options: getChannelOptions(config, channel.id, cachedGuild.options),
 			type: channel.type,
 			textLike: true,
+			hasThreads: isChannelWithThreads(channel),
 			guild: cachedGuild,
 			name: channel.name,
 			permissionOverwrites: new Map(channel.permission_overwrites?.map(o => [o.id, { allow: BigInt(o.allow), deny: BigInt(o.deny) }])),
 			accountsWithReadPermission: new Set(),
 			accountsWithManageThreadsPermission: new Set(),
 			parent: null,
-			lastMessageID: channel.type === DT.ChannelType.GuildVoice ? null : (channel.last_message_id ?? null),
+			lastMessageID: channel.last_message_id ?? null,
 		};
 	} else {
 		return {

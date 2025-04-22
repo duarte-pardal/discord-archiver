@@ -607,7 +607,8 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 			}
 		}
 
-		if (allReady && cachedChannel.options.archiveThreads && cachedChannel.options.requestArchivedThreads) {
+		if (cachedChannel.hasThreads && allReady) {
+			// Active threads are synced when we receive the THREAD_LIST_SYNC dispatch event.
 			if (!accountWithReadPermExisted && cachedChannel.accountsWithReadPermission.size > 0) {
 				log.verbose?.(`We gained permission to read channel #${cachedChannel.name} (${cachedChannel.id}).`);
 				syncMessages(getLeastRESTOccupiedAccount(cachedChannel.accountsWithReadPermission)!, cachedChannel);
@@ -621,6 +622,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 	}
 
 	function syncAllGuildMembers(account: Account, cachedGuild: CachedGuild) {
+		if (!cachedGuild.options.requestAllMembers) return;
 		log.verbose?.(`Requesting all guild members from ${cachedGuild.name} (${cachedGuild.id}) using ${account.name}.`);
 		cachedGuild.memberUserIDs = new Set();
 		account.ongoingMemberRequests.add(cachedGuild.id);
@@ -1538,19 +1540,14 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 				if (!channel.textLike) continue;
 
 				if (channel.options.archive && channel.accountsWithReadPermission.size > 0) {
-					if (channel.options.archiveMessages && channel.options.requestPastMessages) {
-						syncMessages(getLeastRESTOccupiedAccount(channel.accountsWithReadPermission)!, channel);
-					}
+					syncMessages(getLeastRESTOccupiedAccount(channel.accountsWithReadPermission)!, channel);
 
-					// Voice channels can't have threads
-					if (channel.type !== DT.ChannelType.GuildVoice) {
-						if (channel.accountsWithReadPermission.size > 0) {
-							if (channel.accountsWithManageThreadsPermission.size > 0) {
-								syncAllArchivedThreads(getLeastRESTOccupiedAccount(channel.accountsWithManageThreadsPermission)!, channel, ArchivedThreadListType.Private);
-							}
-
-							syncAllArchivedThreads(getLeastRESTOccupiedAccount(channel.accountsWithReadPermission)!, channel, ArchivedThreadListType.Public);
+					if (channel.hasThreads && channel.accountsWithReadPermission.size > 0) {
+						if (channel.accountsWithManageThreadsPermission.size > 0) {
+							syncAllArchivedThreads(getLeastRESTOccupiedAccount(channel.accountsWithManageThreadsPermission)!, channel, ArchivedThreadListType.Private);
 						}
+
+						syncAllArchivedThreads(getLeastRESTOccupiedAccount(channel.accountsWithReadPermission)!, channel, ArchivedThreadListType.Public);
 					}
 				}
 			}

@@ -689,6 +689,7 @@ type TextChannelFields = {
 };
 
 type DMChannelFields = {
+	// TODO: Probably missing last_message_id
 	/** The recipients of the DM */
 	recipients: PartialUser[];
 };
@@ -723,6 +724,13 @@ type GuildChannelFields = {
 };
 
 type VoiceChannelFields = {
+	/** Whether the channel is nsfw */
+	nsfw?: boolean;
+	/**
+	 * The ID of the last message sent in this channel (or thread for guild forum or guild media
+	 * channels) (may not point to an existing or valid message or thread)
+	 */
+	last_message_id: string | null;
 	/** The bitrate (in bits) of the voice or stage channel */
 	bitrate?: number;
 	/** The user limit of the voice or stage channel */
@@ -774,7 +782,12 @@ type ThreadChannelFields = {
 };
 
 type ForumChannelFields = {
-	/** The ID of the last message sent in this channel (or thread for guild forum or guild media channels) (may not point to an existing or valid message or thread) */
+	/** Whether the channel is nsfw */
+	nsfw?: boolean;
+	/**
+	 * The ID of the last message sent in this channel (or thread for guild forum or guild media
+	 * channels) (may not point to an existing or valid message or thread)
+	 */
 	last_message_id: string | null;
 	/** The set of tags that can be used in a guild forum or a guild media channel */
 	available_tags: ForumThreadTag[];
