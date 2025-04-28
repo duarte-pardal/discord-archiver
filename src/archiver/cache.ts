@@ -51,17 +51,28 @@ export type CachedGuild = {
 	id: string;
 	options: GuildOptions;
 	name: string;
+
 	ownerID: string;
 	/** The permission bitfield for each role, indexed by the role ID */
 	rolePermissions: Map<string, bigint>;
 	accountData: Map<Account, GuildAccountData>;
+	/**
+	 * Accounts with the CREATE_GUILD_EXPRESSIONS or the MANAGE_GUILD_EXPRESSIONS permission,
+	 * required to view who uploaded each emoji, sticker, and soundboard sound.
+	 */
+	accountsWithExpressionPermission: Set<Account>;
+
 	channels: Map<string, CachedChannel>;
 	/** The active threads found in the ready payload */
 	activeThreads: Map<string, CachedThread>;
 	memberUserIDs: Set<bigint> | null;
+
+	/** Whether we are missing uploader info for some emojis. */
+	missingEmojiUploaders: boolean | undefined;
+
 	/**
-	 * Resolved when the guild is stored in the database. This is needed because the initial sync
-	 * involves download the guild's icon, if it has one.
+	 * Resolved when the guild is stored in the database. This is needed because we can't archive
+	 * sub-objects (e.g. messages) in the database before the guild is archived.
 	 */
 	initialSyncPromise: Promise<void>;
 };
@@ -120,7 +131,7 @@ export function createCachedChannel(channel: DT.Channel, config: ParsedConfig, c
 	}
 }
 
-export function extractThreadInfo(thread: DT.Thread, config: ParsedConfig, parent: CachedTextLikeChannel): CachedThread {
+export function createCachedThread(thread: DT.Thread, config: ParsedConfig, parent: CachedTextLikeChannel): CachedThread {
 	return {
 		id: thread.id,
 		options: getThreadOptions(config, thread.id, parent.options),

@@ -16,10 +16,10 @@ import { parseArgs, ParseArgsConfig } from "node:util";
 import log from "../util/log.js";
 import { getTag } from "../discord-api/tag.js";
 import { RateLimiter } from "../util/rate-limiter.js";
-import { CachedTextLikeChannel, CachedGuild, createCachedChannel, extractThreadInfo, guilds, isGuildTextLikeChannel, CachedThread, CachedChannel, dmChannels as directChannels } from "./cache.js";
+import { CachedTextLikeChannel, CachedGuild, createCachedChannel, createCachedThread, guilds, isGuildTextLikeChannel, CachedThread, CachedChannel, dmChannels as directChannels } from "./cache.js";
 import { Account, AccountOptions, accounts, getLeastGatewayOccupiedAccount, getLeastRESTOccupiedAccount, OngoingOperation } from "./accounts.js";
 import { ArchivedThreadSyncProgress, downloadProgresses, MessageSyncProgress, progressCounts, startProgressDisplay, stopProgressDisplay, updateProgressOutput } from "./progress.js";
-import { DownloadArguments, getCDNHashURL, getDownloadTransactionFunction, normalizeURL } from "./files.js";
+import { DownloadArguments, getCDNEmojiURL, getCDNHashURL, getDownloadTransactionFunction, normalizeURL } from "./files.js";
 import { mergeOptions } from "../util/http.js";
 import { mapIterator } from "../util/iterators.js";
 import { setMaxListeners } from "node:events";
@@ -27,6 +27,7 @@ import { FileStore } from "../db/file-store.js";
 import { getGuildOptions, isFileStoreNeeded, MessageOptions, parseConfig, ParsedConfig } from "./config.js";
 import { readFile } from "node:fs/promises";
 import { ZodError } from "zod";
+import { extractEmojis } from "../discord-api/message-content.js";
 
 setMaxListeners(100);
 
@@ -142,7 +143,15 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 	// ARCHIVING
 
 	function extractMessageFiles(message: DT.Message, options: MessageOptions): DownloadArguments[] {
+		const emojis = extractEmojis(message.content);
+
 		const files: DownloadArguments[] = [];
+		if (options.downloadEmojisInMessages) {
+			for (const emoji of emojis) {
+				const url = getCDNEmojiURL(emoji, config.mediaConfig.usedEmoji, config.mediaConfig.animatedUsedEmoji);
+				files.push({ url, downloadURL: url });
+			}
+		}
 		if (options.downloadAttachments) {
 			for (const attachment of message.attachments) {
 				const normalizedURL = normalizeURL(attachment.url);
@@ -193,12 +202,17 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 			userIDs: string[];
 		}[] = [];
 
-		if (includeReactions && message.reactions != null) {
+		if (includeReactions && cachedChannel.options.reactionArchivalMode === "users" && message.reactions != null) {
 			for (const reaction of message.reactions) {
 				for (const [reactionType, expectedCount] of [
 					...(reaction.count_details.normal > 0 ? [[0, reaction.count_details.normal]] : []),
 					...(reaction.count_details.burst > 0 ? [[1, reaction.count_details.burst]] : []),
 				] as [0 | 1, number][]) {
+					if (cachedChannel.options.downloadEmojisInReactions && reaction.emoji.id !== null) {
+						const url = getCDNEmojiURL(reaction.emoji, config.mediaConfig.usedEmoji, config.mediaConfig.animatedUsedEmoji);
+						files.push({ url, downloadURL: url });
+					}
+
 					const reactionData = {
 						emoji: reaction.emoji,
 						reactionType,
@@ -505,7 +519,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 					for (const thread of list.threads) {
 						// channel.accountsWithReadPermission is guaranteed to have an account because
 						// if it doesn't, this sync would have been aborted.
-						syncMessages(getLeastRESTOccupiedAccount(channel.accountsWithReadPermission)!, extractThreadInfo(thread, config, channel));
+						syncMessages(getLeastRESTOccupiedAccount(channel.accountsWithReadPermission)!, createCachedThread(thread, config, channel));
 					}
 
 					oldestThreadArchivedTimestamp = list.threads.at(-1)!.thread_metadata.archive_timestamp;
@@ -534,13 +548,79 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 		updateProgressOutput();
 	}
 
+	async function requestExpressionUploaders(account: Account, cachedGuild: CachedGuild) {
+		const abortController = new AbortController();
+		const restOptions = mergeOptions(account.restOptions, { signal: abortController.signal });
+
+		const { promise: end, resolve: endOperation } = Promise.withResolvers<void>();
+		const operation: OngoingOperation = {
+			abortController,
+			end,
+		};
+		account.ongoingExpressionUploaderRequests.add(operation);
+		account.numberOfOngoingRESTOperations++;
+
+		try {
+			log.verbose?.(`Requesting the uploaders of emojis from ${cachedGuild.name} (${cachedGuild.id}) using ${account.name}.`);
+			const { response, data } = await account.request<DT.CustomEmoji[]>(`/guilds/${cachedGuild.id}/emojis`, restOptions, true);
+			if (!response.ok) {
+				log.warning?.(`Got ${response.status} ${response.statusText} response while requesting the uploaders of emojis from ${cachedGuild.name} (${cachedGuild.id}) using ${account.name}.`);
+				return;
+			}
+			const emojisWithUploader = data!.filter((e => e.user != null) as (e: DT.CustomEmoji) => e is (DT.CustomEmoji & { user: DT.PartialUser }));
+			db.transaction(async () => {
+				const userIDs = new Set();
+				for (const emoji of emojisWithUploader) {
+					if (!userIDs.has(emoji.user.id)) {
+						userIDs.add(emoji.user.id);
+						db.request({
+							type: RequestType.AddUserSnapshot,
+							user: emoji.user,
+							timing: {
+								timestamp: Date.now(),
+								realtime: false,
+							},
+						});
+					}
+				}
+				db.request({
+					type: RequestType.UpdateEmojiUploaders,
+					emojis: emojisWithUploader
+						.map(emoji => ({ id: emoji.id, user__id: emoji.user.id })),
+				});
+			});
+		} catch (err) {
+			if (err !== abortError) {
+				throw err;
+			}
+		} finally {
+			account.ongoingExpressionUploaderRequests.delete(operation);
+			account.numberOfOngoingRESTOperations--;
+			endOperation();
+		}
+	}
+
 
 	// GATEWAY
 
+	// BUG: Permissions aren't properly updated when role permissions change
 	function updateGuildPermissions(cachedGuild: CachedGuild) {
 		for (const cachedChannel of cachedGuild.channels.values()) {
 			if (cachedChannel.textLike) {
 				updateGuildChannelPermissions(cachedChannel);
+			}
+		}
+		for (const [account, accountData] of cachedGuild.accountData) {
+			const expressionPermissions = account.bot ?
+				DT.Permission.ManageGuildExpressions :
+				(DT.Permission.CreateGuildExpressions | DT.Permission.ManageGuildExpressions);
+			const hasEmojiPermission = (accountData.guildPermissions & expressionPermissions) != 0n;
+			if (hasEmojiPermission) {
+				cachedGuild.accountsWithExpressionPermission.add(account);
+				account.references.add(cachedGuild.accountsWithExpressionPermission);
+			} else if (cachedGuild.accountsWithExpressionPermission.has(account)) {
+				cachedGuild.accountsWithExpressionPermission.delete(account);
+				account.references.delete(cachedGuild.accountsWithExpressionPermission);
 			}
 		}
 	}
@@ -645,7 +725,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 
 			/** The number of guilds left to receive a Guild Create event for. Only used for bots. */
 			let numberOfGuildsLeft: number;
-			function receivedGuildInfo() {
+			function onReceivedGuildInfo() {
 				if (bot && !ready) {
 					numberOfGuildsLeft--;
 					if (numberOfGuildsLeft === 0) {
@@ -751,13 +831,13 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 
 						case "GUILD_DELETE": {
 							if (payload.d.unavailable) {
-								receivedGuildInfo();
+								onReceivedGuildInfo();
 							}
 							break;
 						}
 
 						case "GUILD_CREATE": {
-							receivedGuildInfo();
+							onReceivedGuildInfo();
 							let cachedGuild: CachedGuild;
 							const guild = payload.d;
 							const rolePermissions = new Map(guild.roles.map(r => [r.id, BigInt(r.permissions)]));
@@ -765,8 +845,9 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 
 							const options = getGuildOptions(config, guild.id);
 
-							if (!guilds.has(guild.id)) {
-								let initialSyncPromise;
+							const alreadyCached = guilds.has(guild.id);
+							if (!alreadyCached) {
+								let initialSyncPromise: Promise<Pick<CachedGuild, "missingEmojiUploaders"> | undefined>;
 								if (options.archive) {
 									const files: DownloadArguments[] = [];
 									if (options.downloadServerAssets) {
@@ -787,38 +868,57 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 											files.push({ url, downloadURL: url });
 										}
 									}
+									if (options.downloadExpressions) {
+										for (const emoji of guild.emojis) {
+											const url = getCDNEmojiURL(emoji, config.mediaConfig.serverEmoji, config.mediaConfig.animatedServerEmoji);
+											files.push({ url, downloadURL: url });
+										}
+									}
+
 
 									// Will be awaited below.
 									initialSyncPromise = doDownloadTransaction(abortController.signal, files, async () => {
+										const guildSnapshotTiming = {
+											timestamp,
+											realtime: false,
+										};
+
 										db.request({
-											type: RequestType.SyncGuildChannelsAndRoles,
+											type: RequestType.SyncDeletedGuildSubObjects,
 											guildID: BigInt(guild.id),
 											channelIDs: new Set(guild.channels.map(c => BigInt(c.id))),
 											roleIDs: new Set(guild.roles.map(r => BigInt(r.id))),
-											timing: {
-												timestamp,
-												realtime: false,
-											},
+											emojiIDs: new Set(guild.emojis.map(e => BigInt(e.id))),
+											timing: guildSnapshotTiming,
 										});
 
 										db.request({
 											type: RequestType.AddGuildSnapshot,
 											guild,
-											timing: {
-												timestamp,
-												realtime: false,
-											},
+											timing: guildSnapshotTiming,
 										});
+
+										for (const emoji of guild.emojis) {
+											db.request({
+												type: RequestType.AddGuildEmojiSnapshot,
+												emoji,
+												guildID: guild.id,
+												timing: guildSnapshotTiming,
+											});
+										}
+										const ret = Promise.all([
+											db.request({
+												type: RequestType.CheckForMissingEmojiUploaders,
+												guildID: guild.id,
+											}),
+										]);
 
 										for (const role of guild.roles) {
 											db.request({
 												type: RequestType.AddRoleSnapshot,
 												role,
 												guildID: guild.id,
-												timing: {
-													timestamp,
-													realtime: false,
-												},
+												timing: guildSnapshotTiming,
 											});
 										}
 
@@ -826,10 +926,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 											db.request({
 												type: RequestType.AddChannelSnapshot,
 												channel: Object.assign(channel, { guild_id: guild.id }),
-												timing: {
-													timestamp,
-													realtime: false,
-												},
+												timing: guildSnapshotTiming,
 											});
 										}
 
@@ -837,15 +934,20 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 											db.request({
 												type: RequestType.AddChannelSnapshot,
 												channel: Object.assign(thread, { guild_id: guild.id }),
-												timing: {
-													timestamp,
-													realtime: false,
-												},
+												timing: guildSnapshotTiming,
 											});
 										}
+
+										const [
+											missingEmojiUploaders,
+										] = await ret;
+										return {
+											missingEmojiUploaders,
+										};
 									});
 								} else {
-									initialSyncPromise = Promise.resolve();
+									// This guild won't be archived
+									initialSyncPromise = Promise.resolve(undefined);
 								}
 
 								cachedGuild = {
@@ -855,10 +957,12 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 									ownerID: guild.owner_id,
 									rolePermissions,
 									accountData: new Map(),
+									accountsWithExpressionPermission: new Set(),
 									channels: new Map(),
 									activeThreads: new Map(),
 									memberUserIDs: null,
-									initialSyncPromise,
+									missingEmojiUploaders: undefined,
+									initialSyncPromise: initialSyncPromise.then(() => undefined),
 								};
 								cachedGuild.channels = new Map(
 									payload.d.channels.map(c => [c.id, createCachedChannel(c, config, cachedGuild)]),
@@ -866,7 +970,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 								guilds.set(guild.id, cachedGuild);
 								for (const thread of guild.threads) {
 									const parent = cachedGuild.channels.get(thread.parent_id) as CachedTextLikeChannel;
-									cachedGuild.activeThreads.set(thread.id, extractThreadInfo(thread, config, parent));
+									cachedGuild.activeThreads.set(thread.id, createCachedThread(thread, config, parent));
 								}
 
 								cachedGuild.accountData.set(account, {
@@ -877,10 +981,9 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 
 								updateProgressOutput();
 
-								await initialSyncPromise;
-								log.verbose?.(`Synced basic guild info for ${cachedGuild.name} (${cachedGuild.id}) using ${account.name}.`);
-							} else {
-								cachedGuild = guilds.get(guild.id)!;
+								const syncResult = await initialSyncPromise;
+								cachedGuild.missingEmojiUploaders = syncResult?.missingEmojiUploaders;
+								log.verbose?.(`${options.archive ? "Synced" : "Received"} basic guild info for ${cachedGuild.name} (${cachedGuild.id}) using ${account.name}.`);
 							}
 
 							// TODO: Sync when a new guild appears. This should happen after awaiting the initial sync.
@@ -953,6 +1056,31 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 										id: payload.d.role_id,
 										timing,
 									});
+								});
+							}
+							break;
+						}
+
+						case "GUILD_EMOJIS_UPDATE": {
+							const cachedGuild = getGuild(payload.d.guild_id, payload.t);
+							if (cachedGuild === undefined) break;
+
+							if (cachedGuild.options.storeServerEdits) {
+								await db.transaction(async () => {
+									db.request({
+										type: RequestType.SyncDeletedGuildSubObjects,
+										guildID: BigInt(payload.d.guild_id),
+										emojiIDs: new Set(payload.d.emojis.map(e => BigInt(e.id))),
+										timing,
+									});
+									for (const emoji of payload.d.emojis) {
+										db.request({
+											type: RequestType.AddGuildEmojiSnapshot,
+											emoji,
+											guildID: payload.d.guild_id,
+											timing,
+										});
+									}
 								});
 							}
 							break;
@@ -1183,7 +1311,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 									break;
 								}
 
-								const threadInfo = extractThreadInfo(thread, config, cachedChannel);
+								const threadInfo = createCachedThread(thread, config, cachedChannel);
 
 								if (threadInfo.options.archiveThreads) {
 									threadsToArchive.push(thread);
@@ -1272,7 +1400,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 							const cachedChannel = getChannelOrThreadByIDs(payload.d.channel_id, payload.d.guild_id, payload.t);
 							if (cachedChannel === undefined) break;
 
-							if (cachedChannel.options.reactionArchivalMode === "users") {
+							if (cachedChannel.options.reactionArchivalMode === "users" && cachedChannel.options.storeReactionEvents) {
 								await cachedChannel.guild?.initialSyncPromise;
 								await db.transaction(async () => {
 									db.request({
@@ -1291,7 +1419,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 							const cachedChannel = getChannelOrThreadByIDs(payload.d.channel_id, payload.d.guild_id, payload.t);
 							if (cachedChannel === undefined) break;
 
-							if (cachedChannel.options.reactionArchivalMode === "users") {
+							if (cachedChannel.options.reactionArchivalMode === "users" && cachedChannel.options.storeReactionEvents) {
 								await cachedChannel.guild?.initialSyncPromise;
 								await db.transaction(async () => {
 									db.request({
@@ -1312,7 +1440,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 							const cachedChannel = getChannelOrThreadByIDs(payload.d.channel_id, payload.d.guild_id, payload.t);
 							if (cachedChannel === undefined) break;
 
-							if (cachedChannel.options.reactionArchivalMode === "users") {
+							if (cachedChannel.options.reactionArchivalMode === "users" && cachedChannel.options.storeReactionEvents) {
 								await cachedChannel.guild?.initialSyncPromise;
 								await db.transaction(async () => {
 									db.request({
@@ -1375,10 +1503,10 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 			});
 
 			const restRateLimiter = new RateLimiter(49, 1000);
-			async function request<T>(endpoint: string, options?: RequestInit, abortIfFail?: boolean): Promise<RequestResult<T>> {
+			async function request<T>(endpoint: string, options = account.restOptions, abortIfFail?: boolean): Promise<RequestResult<T>> {
 				await restRateLimiter.whenFree();
 				const result = await apiReq<T>(endpoint, options, abortIfFail);
-				if (result.response.status === 401) {
+				if (result.response.status === 401 && accounts.has(account)) {
 					log.error?.(`Got HTTP status 401 Unauthorized while using ${account.name}. The authentication token is no longer valid. This account will be disconnected.`);
 					// This will immediately abort all operations
 					account.disconnect();
@@ -1390,6 +1518,9 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 			}
 
 			async function disconnect() {
+				if (!accounts.has(account))
+					throw new Error("The account was already disconnected");
+
 				account.gatewayConnection.destroy();
 				accounts.delete(account);
 
@@ -1422,6 +1553,10 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 					endPromises.push(end);
 					abortController.abort();
 				}
+				for (const { abortController, end } of account.ongoingExpressionUploaderRequests.values()) {
+					endPromises.push(end);
+					abortController.abort();
+				}
 				await Promise.all(endPromises);
 
 				if (!ready) {
@@ -1446,10 +1581,10 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 				numberOfOngoingRESTOperations: 0,
 				ongoingMessageSyncs: new Map(),
 				ongoingPrivateThreadMessageSyncs: new Map(),
-
 				ongoingPublicThreadListSyncs: new Map(),
 				ongoingPrivateThreadListSyncs: new Map(),
 				ongoingJoinedPrivateThreadListSyncs: new Map(),
+				ongoingExpressionUploaderRequests: new Set(),
 
 				numberOfOngoingGatewayOperations: 0,
 				ongoingMemberRequests: new Set(),
@@ -1491,25 +1626,26 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 
 	// Connect to all accounts
 	try {
-		await Promise.all(config.accounts.map(({ token, name }, index) => connectAccount({
-			name: name ?? `account #${index}`,
+		await Promise.all(config.accounts.map((accountConfig, index) => connectAccount({
+			name: accountConfig.name ?? `account #${index}`,
 			mode: "bot",
-			token,
-			gatewayIdentifyData: {
+			token: accountConfig.token,
+			gatewayIdentifyData: Object.assign({
 				intents:
 					DT.GatewayIntent.Guilds |
 					DT.GatewayIntent.GuildMessages |
 					DT.GatewayIntent.GuildMessageReactions |
 					DT.GatewayIntent.DirectMessages |
 					DT.GatewayIntent.DirectMessageReactions |
-					DT.GatewayIntent.GuildMembers,
+					DT.GatewayIntent.GuildMembers |
+					DT.GatewayIntent.GuildEmojisAndStickers,
 				properties: {
 					os: process.platform,
 					browser: "DiscordArchiver/0.0.0",
 					device: "DiscordArchiver/0.0.0",
 				},
-				token,
-			},
+				token: accountConfig.token,
+			}, accountConfig.gatewayIdentifyData),
 			restHeaders: {},
 		})));
 	} catch (err) {
@@ -1528,11 +1664,14 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 		(async () => {
 			await guild.initialSyncPromise;
 
-			if (guild.options.requestAllMembers) {
-				syncAllGuildMembers(getLeastGatewayOccupiedAccount(guild.accountData.keys())!, guild);
+			syncAllGuildMembers(getLeastGatewayOccupiedAccount(guild.accountData.keys())!, guild);
+			if (guild.missingEmojiUploaders && guild.accountsWithExpressionPermission.size > 0) {
+				requestExpressionUploaders(getLeastRESTOccupiedAccount(guild.accountsWithExpressionPermission)!, guild);
 			}
 
 			for (const thread of guild.activeThreads.values()) {
+				// There should always be an account with read permission since otherwise we wouldn't
+				// be able to see the thread.
 				syncMessages(getLeastRESTOccupiedAccount(thread.parent.accountsWithReadPermission)!, thread);
 			}
 

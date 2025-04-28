@@ -2,7 +2,7 @@
 
 Discord Archiver provides a flexible and comprehensive configuration system to control which data is archived and how.
 
-This project accepts configuration in the [JSON5 format](https://spec.json5.org/), and as such, you can also use the classic [JSON format](https://www.json.org/).
+This project accepts configuration in the [JSON5 format](https://spec.json5.org/), but you can also use the classic [JSON format](https://www.json.org/).
 
 ## Basic structure
 
@@ -79,7 +79,7 @@ Each account is specified as an object in the `accounts` array with the followin
 
 - `name` (string): A human&hyphen;readable name for the account.
 - `token` (string): The Discord token.
-
+- `gatewayIdentifyData` (object): The data to send in the identify payload when connecting to the Gateway. May include fields such as `presence`. Check the [Discord documentation](https://discord.com/developers/docs/events/gateway-events#identify) for all fields.
 
 ## Options
 
@@ -145,7 +145,7 @@ Controls whether to download and store the avatars of messages’ authors.
 
 #### `downloadAttachments` (boolean)
 
-Controls whether to download attachments.
+Controls whether to download message attachments.
 
 #### `downloadEmbeddedImages` (boolean)
 
@@ -155,23 +155,19 @@ Controls whether to download embedded images, including thumbnails.
 
 Controls whether to download embedded videos.
 
-<!--
-
 #### `downloadEmojisInMessages` (boolean)
 
-Controls whether to download all of the emojis in the content of affected messages.
+Controls whether to download the images for all of the emojis in the content of affected messages.
 
 #### `downloadEmojisInReactions` (boolean)
 
-Controls whether to download all of the emojis in the reactions of affected messages.
-
--->
+Controls whether to download the images for all of the emojis in the reactions of affected messages.
 
 #### `reactionArchivalMode`
 
 Controls how to archive reactions. It may be one of:
 
-- `none`: Reactions aren't archived.
+- `none`: Reactions aren’t archived.
 - `users`: The list of users who reacted with each emoji is archived.
 
 A mode that archives only the reaction counts is planned.
@@ -203,7 +199,7 @@ Messages inside archived threads will also be downloaded and stored, depending o
 
 #### `storeServerEdits` (boolean)
 
-Controls whether to store edits to server properties as soon as they are edited.
+Controls whether to store edits to server properties, roles, emojis, stickers and soundboard sounds as soon as they are edited.
 
 #### `requestAllMembers` (boolean)
 
@@ -219,4 +215,39 @@ Controls whether to download and store the avatars of the all server members.
 
 #### `downloadServerAssets` (boolean)
 
-Controls whether to download and store the server's icon, banner, home header, splash image and discovery splash image.
+Controls whether to download and store the server’s icon, banner, home header, splash image and discovery splash image.
+
+#### `downloadExpressions` (boolean)
+
+Controls whether to download and store the images/audio for all server emojis, stickers and soundboard sounds. Details about emojis, stickers and soundboard sounds, such as their names, are always archived as long as the server is archived.
+
+#### `requestExpressionUploaders` (boolean)
+
+Controls whether to request information about the users who uploaded each emoji, sticker and soundboard sound, in case there’s an account with permission to view the uploaders (create expressions permission or manage expressions permission). This option has no effect if no accounts have permission to view the uploaders.
+
+
+## Media download options
+
+Each entry in `mediaConfig` may contain the following properties:
+
+- `format` (string): one of `"png"`, `"jpeg"`, `"webp"` or `"gif"`. `"gif"` might not be available for images from certain sources (this is a Discord limitation).
+- `queryParams` (string): the parameters to use when requesting the image. Check the [official documentation](https://docs.discord.sex/reference#cdn-parameters) for a list of all officially supported parameters and values or the [unofficial documentation](https://docs.discord.sex/reference#cdn-parameters) for a list of all known parameters and values.
+
+### Format selection
+
+If you want the highest quality possible, you should use the following configuration:
+
+```json5
+mediaConfig: {
+  defaultImage: {
+    format: "webp",
+    queryParams: "size=4096&quality=lossless",
+  },
+  defaultAnimatedImage: {
+    format: "webp",
+    queryParams: "size=4096&quality=lossless&animated=true",
+  }
+}
+```
+
+The WebP format generally provides better lossy compression than JPEG (for the same quality) and better lossless compression than PNG. It’s also the only format that Discord supports for downloading animated images with lossless compression (that is, without any loss of quality relative to what was uploaded).

@@ -161,6 +161,7 @@ export class FileStore {
 		await Promise.allSettled(ongoingAcquisitions.map(a => a.abortPromise));
 		if (this.#ongoingAcquisitions.size !== 0 || this.#pendingFileNames.size !== 0) {
 			this.log?.warning?.("Debug warning (please report): Possible memory leak in the file store.");
+			this.log?.debug?.("ongoingAcquisitions: %o\npendingFileNames: %o", this.#ongoingAcquisitions, this.#pendingFileNames);
 		}
 		try {
 			await fs.promises.rmdir(`${this.#basePath}/pending`);
@@ -232,7 +233,17 @@ export class FileStore {
 	}
 	async settleFile(pendingPath: string, hash: Buffer): Promise<void> {
 		this.log?.debug?.(`Settling file ${pendingPath} -> ${hash.toString("base64url")}`);
-		await fs.promises.rename(pendingPath, `${this.#basePath}/${hash.toString("base64url")}`);
+		// The rename operation sometimes throws EPERM on Windows. If that happens, try again.
+		for (let i = 0; ; i++) {
+			try {
+				await fs.promises.rename(pendingPath, `${this.#basePath}/${hash.toString("base64url")}`);
+				break;
+			} catch (err) {
+				if ((err as NodeJS.ErrnoException).code !== "EPERM" || i === 2) {
+					throw err;
+				}
+			}
+		}
 	}
 
 	/**
@@ -317,6 +328,7 @@ export class FileStore {
 				) {
 					// This file is already in the database
 					this.#ongoingAcquisitions.delete(url);
+					this.#pendingFileNames.delete(pendingFileName);
 					return savedPendingFile;
 				}
 
@@ -326,6 +338,7 @@ export class FileStore {
 					fileInfo = await callback(pendingFilePath, childController.signal);
 				} catch (err) {
 					this.#ongoingAcquisitions.delete(url);
+					this.#pendingFileNames.delete(pendingFileName);
 					throw err;
 				}
 
@@ -380,7 +393,7 @@ export class FileStore {
 		return ongoingAcquisition;
 	}
 
-	async doFileTransaction(abortSignal: AbortSignal, operations: OngoingFileAcquisition[], transactionCallback: () => Promise<void>): Promise<void> {
+	async doFileTransaction<T>(abortSignal: AbortSignal, operations: OngoingFileAcquisition[], transactionCallback: () => T): Promise<Awaited<T>> {
 		let abortPromises: Promise<void>[] | undefined;
 		function abortAll() {
 			abortPromises = operations.map(o => o.abort());
@@ -402,11 +415,11 @@ export class FileStore {
 		}
 
 		try {
-			await this.#db.transaction(async () => {
+			return await this.#db.transaction(async () => {
 				for (const file of files) {
 					file.writeToDB();
 				}
-				await transactionCallback();
+				return await transactionCallback();
 			});
 		} finally {
 			// Move the new unique files to the main directory after the information

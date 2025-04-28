@@ -15,6 +15,7 @@ export enum ObjectType {
 	Message,
 	Attachment,
 	ForumTag,
+	GuildEmoji,
 }
 
 type RealObjectType = {
@@ -26,6 +27,7 @@ type RealObjectType = {
 	[ObjectType.Message]: DT.Message;
 	[ObjectType.Attachment]: DT.Attachment;
 	[ObjectType.ForumTag]: DT.ForumThreadTag;
+	[ObjectType.GuildEmoji]: DT.CustomEmoji;
 };
 
 enum ValueType {
@@ -243,7 +245,6 @@ const schemas: { [OT in ObjectType]: Schema<RealObjectType[OT]> } = {
 			["description", ValueType.String, NullValue.Absent],
 			["content_type", ValueType.String, NullValue.Absent],
 			["size", ValueType.Integer],
-
 			["height", ValueType.Integer, NullValue.Absent],
 			["width", ValueType.Integer, NullValue.Absent],
 			["ephemeral", ValueType.StrictBoolean],
@@ -258,6 +259,18 @@ const schemas: { [OT in ObjectType]: Schema<RealObjectType[OT]> } = {
 			["id", ValueType.BigInteger],
 			["name", ValueType.String],
 			["moderated", ValueType.Boolean],
+		],
+		subObjectProperties: [],
+	},
+	[ObjectType.GuildEmoji]: {
+		properties: [
+			["id", ValueType.BigInteger],
+			["require_colons", ValueType.StrictBoolean],
+			["managed", ValueType.StrictBoolean],
+			["animated", ValueType.StrictBoolean],
+
+			["name", ValueType.String],
+			["roles", ValueType.BigIntegerArray],
 		],
 		subObjectProperties: [],
 	},

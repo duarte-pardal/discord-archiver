@@ -211,6 +211,15 @@ LEFT JOIN latest_guild_snapshots ON latest_guild_snapshots.id = channel.guild_id
 WHERE message_fts_index MATCH :$query;
 `),
 		},
+		guildEmoji: {
+			...getStatements("guild_emoji", "_guild_id", ["name", "roles"], ["_guild_id", "user__id", "require_colons", "managed", "animated"]),
+			setUploader: db.prepare(`\
+UPDATE latest_guild_emoji_snapshots SET user__id = :user__id WHERE id = :id;
+`),
+			checkForMissingUploaders: db.prepare(`
+SELECT 1 FROM latest_guild_emoji_snapshots WHERE _deleted IS NULL AND user__id IS NULL;
+`),
+		},
 	} as const;
 
 	function encodeTiming(timing: Timing | null): bigint {
@@ -317,10 +326,14 @@ WHERE message_fts_index MATCH :$query;
 				statements.vacuum.run();
 				break;
 			}
-			case RequestType.SyncGuildChannelsAndRoles: {
+			case RequestType.SyncDeletedGuildSubObjects: {
 				const timestamp = encodeTiming(req.timing);
-				syncDeletions(objectStatements.channel, req.guildID, req.channelIDs, timestamp);
-				syncDeletions(objectStatements.role, req.guildID, req.roleIDs, timestamp);
+				if (req.channelIDs !== undefined)
+					syncDeletions(objectStatements.channel, req.guildID, req.channelIDs, timestamp);
+				if (req.roleIDs !== undefined)
+					syncDeletions(objectStatements.role, req.guildID, req.roleIDs, timestamp);
+				if (req.emojiIDs !== undefined)
+					syncDeletions(objectStatements.guildEmoji, req.guildID, req.emojiIDs, timestamp);
 				break;
 			}
 			case RequestType.AddUserSnapshot: {
@@ -623,6 +636,34 @@ WHERE message_fts_index MATCH :$query;
 				break;
 			}
 
+			case RequestType.AddGuildEmojiSnapshot: {
+				const emoji = encodeObject(ObjectType.GuildEmoji, req.emoji);
+				emoji._guild_id = req.guildID;
+				// user__id is stored once per object, not once per snapshot, so it's not checked when
+				// determining whether this should be a new snapshot.
+				emoji.user__id = req.emoji.user?.id;
+				response = addSnapshot(objectStatements.guildEmoji, assignTiming(emoji, req.timing));
+				break;
+			}
+			case RequestType.MarkGuildEmojiAsDeleted: {
+				objectStatements.guildEmoji.markAsDeleted.run({
+					id: req.id,
+					_deleted: encodeTiming(req.timing),
+				});
+				response = getChanges() > 0;
+				break;
+			}
+			case RequestType.UpdateEmojiUploaders: {
+				for (const emoji of req.emojis) {
+					objectStatements.guildEmoji.setUploader.run(emoji);
+				}
+				break;
+			}
+			case RequestType.CheckForMissingEmojiUploaders: {
+				response = objectStatements.guildEmoji.checkForMissingUploaders.get() !== undefined;
+				break;
+			}
+
 			case RequestType.GetLastMessageID: {
 				response = (statements.getLastMessageID.get({
 					channel_id: req.channelID,
@@ -715,8 +756,7 @@ WHERE message_fts_index MATCH :$query;
 				break;
 			}
 			default: {
-				// @ts-expect-error `req` should have type `never`
-				throw new TypeError(`Unknown request type ${req.type}.`);
+				throw new TypeError(`Unknown request type ${(req satisfies never as any).type}.`);
 			}
 		}
 		return response;

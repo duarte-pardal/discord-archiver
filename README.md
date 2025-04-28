@@ -79,7 +79,7 @@ You can set the maximum level using the `--log` option. For example, `--log verb
 
 ## Viewing the archived data
 
-There are plans to build an archive browser that would let you browse the archive using the Discord UI you're familiar with, as well as an application that exports the data to human&hyphen;readable formats. For now, there’s only a search utility, but you can also open the archive file with the SQLite CLI or an SQLite viewer. Every time the archiver archives an object for the first time or detects a change in an already-stored object, it records a snapshot of the object to the database. The snapshots are identified by the timestamp at which the data was retrieved from Discord. Check the `schema.sql` file for more info about the database format.
+There are plans to build an archive browser that would let you browse the archive using the Discord UI you’re familiar with, as well as an application that exports the data to human&hyphen;readable formats. For now, there’s only a search utility, but you can also open the archive file with the SQLite CLI or an SQLite viewer. Every time the archiver archives an object for the first time or detects a change in an already-stored object, it records a snapshot of the object to the database. The snapshots are identified by the timestamp at which the data was retrieved from Discord. Check the `schema.sql` file for more info about the database format.
 
 ### Searching
 
@@ -105,8 +105,7 @@ Query examples:
 - Archiving
   - **User account support**
     - **Import user account settings from HAR**
-  - **Archive custom emojis**
-  - **Archive stickers**
+  - **Archive stickers and soundboard sounds**
   - **Archive DM channels**
   - **Allow thread enumeration to be interrupted**
   - **Fix switching accounts on permission changes (or remove multi-account support)**

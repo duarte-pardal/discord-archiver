@@ -522,10 +522,16 @@ export type CustomEmoji = PartialCustomEmoji & {
 	/** IDs of roles allowed to use this emoji */
 	roles?: string[];
 	/** User that created this emoji */
-	user: PartialUser;
+	user?: PartialUser;
+	/** Whether this emoji must be wrapped in colons */
 	require_colons?: boolean;
+	/** Whether this emoji is managed */
 	managed?: boolean;
-	animated?: boolean;
+	/**
+	 * Whether this emoji can be used
+	 *
+	 * May be false due to loss of Server Boosts.
+	 */
 	available?: boolean;
 };
 
@@ -1303,7 +1309,16 @@ export type GatewayIdentifyPayloadBot = GatewayGenericNonDispatchPayload<Gateway
 	large_threshold?: number;
 	shard?: [shard_id: number, num_shards: number];
 	/** Presence structure for initial presence information */
-	presence?: unknown;
+	presence?: {
+		/** Unix time (in milliseconds) of when the client went idle, or null if the client is not idle */
+		since: number | null;
+		/** User's activities */
+		activities: unknown[];
+		/** User's new status */
+		status: "online" | "dnd" | "idle" | "invisible" | "offline";
+		/** Whether or not the client is afk */
+		afk: boolean;
+	};
 	/** Gateway intents */
 	intents: number;
 }>;
@@ -1390,6 +1405,10 @@ export type GatewayGuildCreateDispatchPayload = GatewayGenericDispatchPayload<"G
 }>;
 export type GatewayGuildUpdateDispatchPayload = GatewayGenericDispatchPayload<"GUILD_UPDATE", Guild>;
 export type GatewayGuildDeleteDispatchPayload = GatewayGenericDispatchPayload<"GUILD_DELETE", UnavailableGuild>;
+export type GatewayGuildEmojisUpdateDispatchPayload = GatewayGenericDispatchPayload<"GUILD_EMOJIS_UPDATE", {
+	guild_id: string;
+	emojis: CustomEmoji[];
+}>;
 export type GatewayGuildMemberAddDispatchPayload = GatewayGenericDispatchPayload<"GUILD_MEMBER_ADD", GuildMember & {
 	guild_id: string;
 }>;
@@ -1477,6 +1496,7 @@ export type GatewayDispatchPayload =
 	GatewayGuildCreateDispatchPayload |
 	GatewayGuildUpdateDispatchPayload |
 	GatewayGuildDeleteDispatchPayload |
+	GatewayGuildEmojisUpdateDispatchPayload |
 	GatewayGuildMemberAddDispatchPayload |
 	GatewayGuildMemberRemoveDispatchPayload |
 	GatewayGuildMemberUpdateDispatchPayload |

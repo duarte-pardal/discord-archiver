@@ -10,6 +10,7 @@ import { ConcurrencyLimiter } from "../util/concurrency-limiter.js";
 import { FileStore, OngoingFileAcquisition, PendingFileResult } from "../db/file-store.js";
 import { AnimatedImageOptions, ImageOptions } from "./config.js";
 import { DatabaseConnection } from "../db/index.js";
+import { PartialCustomEmoji } from "../discord-api/types.js";
 
 const ACCEPT_BYTE_RANGES_REGEX = /(?:,|^)\s*bytes\s*(?:,|$)/;
 // TODO: Switch to BLAKE2b 256 (implemented in Bun but not in Node.js)
@@ -207,21 +208,21 @@ function downloadIfNeeded(fileStore: FileStore, url: string, downloadURL: string
 	);
 }
 
-export type DownloadTransactionFunction = (
+export type DownloadTransactionFunction = <T>(
 	abortSignal: AbortSignal,
 	files: DownloadArguments[],
-	transactionCallback: () => Promise<void>
-) => Promise<void>;
+	transactionCallback: () => T
+) => Promise<Awaited<T>>;
 
 export function getDownloadTransactionFunction(
 	db: DatabaseConnection,
 	fileStore: FileStore | undefined,
 ): DownloadTransactionFunction {
-	return function doDownloadTransaction(
+	return function doDownloadTransaction<T>(
 		abortSignal: AbortSignal,
 		files: DownloadArguments[],
-		transactionCallback: () => Promise<void>,
-	): Promise<void> {
+		transactionCallback: () => T,
+	): Promise<Awaited<T>> {
 		if (fileStore !== undefined) {
 			return fileStore.doFileTransaction(
 				abortSignal,
@@ -249,4 +250,8 @@ export function normalizeURL(url: string): string {
 export function getCDNHashURL(prefix: string, hash: string, imageOptions: ImageOptions, animatedImageOptions: AnimatedImageOptions = imageOptions): string {
 	const options = hash.startsWith("a_") ? animatedImageOptions : imageOptions;
 	return `https://cdn.discordapp.com${prefix}/${hash}.${options.format}?${options.queryParams}`;
+}
+export function getCDNEmojiURL(emoji: PartialCustomEmoji, imageOptions: ImageOptions, animatedImageOptions: AnimatedImageOptions): string {
+	const options = emoji.animated ? animatedImageOptions : imageOptions;
+	return `https://cdn.discordapp.com/emojis/${emoji.id}.${options.format}?${options.queryParams}`;
 }

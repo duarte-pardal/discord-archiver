@@ -23,7 +23,7 @@ export const enum RequestType {
 	Optimize,
 	Vacuum,
 	AddUserSnapshot,
-	SyncGuildChannelsAndRoles,
+	SyncDeletedGuildSubObjects,
 	AddGuildSnapshot,
 	SyncGuildMembers,
 	AddMemberSnapshot,
@@ -38,6 +38,10 @@ export const enum RequestType {
 	AddReactionPlacement,
 	MarkReactionAsRemoved,
 	MarkReactionsAsRemovedBulk,
+	AddGuildEmojiSnapshot,
+	MarkGuildEmojiAsDeleted,
+	UpdateEmojiUploaders,
+	CheckForMissingEmojiUploaders,
 	GetFile,
 	GetFiles,
 	GetFileHashUtilization,
@@ -61,12 +65,13 @@ export type AddUserSnapshotRequest = {
 	timing: Timing | null;
 	user: DT.PartialUser;
 };
-export type SyncGuildChannelsAndRolesRequest = {
-	type: RequestType.SyncGuildChannelsAndRoles;
+export type SyncDeletedGuildSubObjectsRequest = {
+	type: RequestType.SyncDeletedGuildSubObjects;
 	timing: Timing;
 	guildID: bigint;
-	channelIDs: Set<bigint>;
-	roleIDs: Set<bigint>;
+	channelIDs?: Set<bigint> | undefined;
+	roleIDs?: Set<bigint> | undefined;
+	emojiIDs?: Set<bigint> | undefined;
 };
 export type AddGuildSnapshotRequest = {
 	type: RequestType.AddGuildSnapshot;
@@ -160,6 +165,28 @@ export type MarkReactionAsRemovedBulkRequest = {
 	emoji: DT.PartialEmoji | null;
 	timing: Timing;
 };
+export type AddGuildEmojiSnapshotRequest = {
+	type: RequestType.AddGuildEmojiSnapshot;
+	timing: Timing | null;
+	emoji: DT.CustomEmoji;
+	guildID: string;
+};
+export type MarkGuildEmojiAsDeletedRequest = {
+	type: RequestType.MarkGuildEmojiAsDeleted;
+	timing: Timing;
+	id: string;
+};
+export type UpdateEmojiUploadersRequest = {
+	type: RequestType.UpdateEmojiUploaders;
+	emojis: {
+		id: string;
+		user__id: string;
+	}[];
+};
+export type CheckForMissingEmojiUploadersRequest = {
+	type: RequestType.CheckForMissingEmojiUploaders;
+	guildID: string;
+};
 export type GetFileRequest = {
 	type: RequestType.GetFile;
 	url: string;
@@ -216,7 +243,7 @@ export type SearchMessagesRequest = {
 export type SingleRequest =
 	CommandRequest |
 	AddUserSnapshotRequest |
-	SyncGuildChannelsAndRolesRequest |
+	SyncDeletedGuildSubObjectsRequest |
 	AddGuildSnapshotRequest |
 	AddRoleSnapshotRequest |
 	MarkRoleAsDeletedRequest |
@@ -232,6 +259,10 @@ export type SingleRequest =
 	AddReactionPlacementRequest |
 	MarkReactionAsRemovedRequest |
 	MarkReactionAsRemovedBulkRequest |
+	AddGuildEmojiSnapshotRequest |
+	MarkGuildEmojiAsDeletedRequest |
+	UpdateEmojiUploadersRequest |
+	CheckForMissingEmojiUploadersRequest |
 	GetFileRequest |
 	GetFileHashUtilizationRequest |
 	AddFileRequest |
@@ -254,7 +285,7 @@ export type File = {
 export type ResponseFor<R extends SingleRequest> =
 	R extends CommandRequest ? void :
 	R extends AddUserSnapshotRequest ? AddSnapshotResult :
-	R extends SyncGuildChannelsAndRolesRequest ? void :
+	R extends SyncDeletedGuildSubObjectsRequest ? void :
 	R extends AddGuildSnapshotRequest ? AddSnapshotResult :
 	R extends AddRoleSnapshotRequest ? AddSnapshotResult :
 	R extends MarkRoleAsDeletedRequest ? boolean :
@@ -270,6 +301,10 @@ export type ResponseFor<R extends SingleRequest> =
 	R extends AddReactionPlacementRequest ? void :
 	R extends MarkReactionAsRemovedRequest ? void :
 	R extends MarkReactionAsRemovedBulkRequest ? void :
+	R extends AddGuildEmojiSnapshotRequest ? AddSnapshotResult :
+	R extends MarkGuildEmojiAsDeletedRequest ? boolean :
+	R extends UpdateEmojiUploadersRequest ? void :
+	R extends CheckForMissingEmojiUploadersRequest ? boolean:
 	R extends GetFileRequest ? Omit<File, "url"> | undefined :
 	R extends GetFileHashUtilizationRequest ? boolean :
 	R extends AddFileRequest ? boolean :

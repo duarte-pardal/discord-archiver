@@ -34,10 +34,10 @@ export type Account = AccountOptions & {
 	ongoingMessageSyncs: Map<CachedTextLikeChannel, Map<string /* the channel/thread ID */, OngoingMessageSync>>;
 	/** For private threads */
 	ongoingPrivateThreadMessageSyncs: Map<CachedTextLikeChannel, Map<string /* the thread ID */, OngoingMessageSync>>;
-
 	ongoingPublicThreadListSyncs: Map<CachedTextLikeChannel, OngoingOperation>;
 	ongoingPrivateThreadListSyncs: Map<CachedTextLikeChannel, OngoingOperation>;
 	ongoingJoinedPrivateThreadListSyncs: Map<CachedTextLikeChannel, OngoingOperation>;
+	ongoingExpressionUploaderRequests: Set<OngoingOperation>;
 
 	numberOfOngoingGatewayOperations: number;
 	/** Set of guild IDs */

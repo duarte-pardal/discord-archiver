@@ -78,6 +78,11 @@ const GuildOptions = ChannelOptions.extend({
 
 	/** Whether to download and store the server's icon, banner, home header, splash image and discovery splash image. */
 	downloadServerAssets: z.boolean(),
+
+	/** Whether to download the images/audio for all server emojis, stickers and soundboard sounds. */
+	downloadExpressions: z.boolean(),
+	/** Whether to request information about who uploaded each emoji, sticker and soundboard sound. */
+	requestExpressionUploaders: z.boolean(),
 });
 type BaseGuildOptions = z.infer<typeof GuildOptions>;
 const PartialGuildOptions = GuildOptions.partial();
@@ -107,6 +112,8 @@ const AccountConfig = z.object({
 	name: z.optional(z.string()),
 	/** The Discord token, including the `Bot ` prefix, if applicable. */
 	token: z.string(),
+	/** The data to send in the identify payload when connecting to the Gateway. */
+	gatewayIdentifyData: z.object({}).passthrough(),
 });
 
 const ImageOptions = z.object({
@@ -133,6 +140,11 @@ const MediaConfig = z.object({
 	serverDiscoverySplash: ImageOptions,
 	serverBanner: ImageOptions,
 	animatedServerBanner: AnimatedImageOptions,
+
+	serverEmoji: ImageOptions,
+	animatedServerEmoji: AnimatedImageOptions,
+	usedEmoji: ImageOptions,
+	animatedUsedEmoji: AnimatedImageOptions,
 });
 type MediaConfig = z.infer<typeof MediaConfig>;
 
@@ -155,7 +167,7 @@ export type ParsedConfig = {
 	mediaConfig: MediaConfig;
 };
 
-export function isFileStoreNeeded(config: Config): boolean {
+export function isFileStoreNeeded(config: ParsedConfig): boolean {
 	function containsDownloadOptions(options: PartialGuildOptions) {
 		return (
 			options.downloadAttachments === true ||
@@ -163,11 +175,12 @@ export function isFileStoreNeeded(config: Config): boolean {
 			options.downloadEmbeddedVideos === true ||
 			options.downloadEmojisInMessages === true ||
 			options.downloadEmojisInReactions === true ||
-			options.downloadServerAssets === true
+			options.downloadServerAssets === true ||
+			options.downloadExpressions === true
 		);
 	}
 
-	if (config.options !== undefined && containsDownloadOptions(config.options)) {
+	if (containsDownloadOptions(config.options)) {
 		return true;
 	}
 	for (const override of config.overrides ?? []) {
@@ -215,7 +228,10 @@ const DEFAULT_OPTIONS: Readonly<GuildOptions> = {
 	storeMemberEvents: true,
 	downloadAllMemberAvatars: false,
 
-	downloadServerAssets: true,
+	downloadServerAssets: false,
+
+	downloadExpressions: false,
+	requestExpressionUploaders: true,
 };
 
 const NO_ARCHIVE_OPTIONS: Readonly<GuildOptions> = {
@@ -255,6 +271,9 @@ const NO_ARCHIVE_OPTIONS: Readonly<GuildOptions> = {
 	downloadAllMemberAvatars: false,
 
 	downloadServerAssets: false,
+
+	downloadExpressions: false,
+	requestExpressionUploaders: false,
 };
 
 function combineOptions<B extends object>(partial: PartialProps<B>, base: B): B {
@@ -271,11 +290,11 @@ export async function parseConfig(json5Config: string): Promise<ParsedConfig> {
 	const options = combineOptions(input.options ?? {}, DEFAULT_OPTIONS);
 
 	const inputMediaConfig = input.mediaConfig ?? {};
-	const defaultImageConfig = inputMediaConfig.defaultImage ??= {
+	const defaultImageConfig = inputMediaConfig.defaultImage ?? {
 		format: "webp",
 		queryParams: "size=4096",
 	};
-	const defaultAnimatedImageConfig = inputMediaConfig.defaultImage ??= {
+	const defaultAnimatedImageConfig = inputMediaConfig.defaultAnimatedImage ?? {
 		format: "webp",
 		queryParams: "size=4096&animated=true",
 	};
@@ -290,6 +309,10 @@ export async function parseConfig(json5Config: string): Promise<ParsedConfig> {
 		serverDiscoverySplash: inputMediaConfig.serverDiscoverySplash ?? defaultImageConfig,
 		serverBanner: inputMediaConfig.serverBanner ?? defaultImageConfig,
 		animatedServerBanner: inputMediaConfig.serverBanner ?? defaultAnimatedImageConfig,
+		serverEmoji: inputMediaConfig.serverEmoji ?? defaultImageConfig,
+		animatedServerEmoji: inputMediaConfig.animatedServerEmoji ?? defaultAnimatedImageConfig,
+		usedEmoji: inputMediaConfig.usedEmoji ?? defaultImageConfig,
+		animatedUsedEmoji: inputMediaConfig.animatedUsedEmoji ?? defaultAnimatedImageConfig,
 	};
 
 	return {

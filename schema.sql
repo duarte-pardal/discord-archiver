@@ -385,6 +385,27 @@ CREATE TABLE reaction_emojis (
 	animated INTEGER NOT NULL
 );
 
+CREATE TABLE latest_guild_emoji_snapshots (
+	id INTEGER NOT NULL PRIMARY KEY,
+	_deleted INTEGER,
+	_guild_id INTEGER NOT NULL REFERENCES latest_guild_snapshots (id),
+	user__id INTEGER REFERENCES latest_user_snapshots (id), -- ID of the user that created this emoji
+	require_colons INTEGER NOT NULL, -- Whether this emoji must be wrapped in colons
+	managed INTEGER NOT NULL, -- Whether this emoji is managed
+	animated INTEGER NOT NULL, -- Whether this emoji is animated
+	---
+	_timestamp INTEGER NOT NULL,
+	name TEXT NOT NULL,
+	roles BLOB -- IDs of roles allowed to use this emoji
+);
+CREATE TABLE previous_guild_emoji_snapshots (
+	id INTEGER NOT NULL REFERENCES latest_guild_emoji_snapshots (id),
+	_timestamp INTEGER NOT NULL,
+	name TEXT NOT NULL,
+	roles BLOB, -- IDs of roles allowed to use this emoji
+	PRIMARY KEY (id, _timestamp)
+) WITHOUT ROWID;
+
 -- Contains information about downloaded files. These may include attachments, profile pictures
 -- and embedded media from external sites.
 CREATE TABLE files (

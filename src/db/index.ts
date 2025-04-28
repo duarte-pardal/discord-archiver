@@ -21,7 +21,7 @@ type BaseDatabaseConnection = {
 
 	request<R extends SingleRequest>(req: R): Promise<ResponseFor<R>>;
 	iteratorRequest<R extends IteratorRequest>(req: R): AsyncIterableIterator<IteratorResponseFor<R>>;
-	transaction(callback: () => Promise<void>): Promise<void>;
+	transaction<T>(callback: () => T): Promise<Awaited<T>>;
 	close(): Promise<void>;
 };
 
@@ -162,8 +162,8 @@ class AsyncDatabaseConnection implements BaseDatabaseConnection {
 		}
 	}
 
-	transaction<T>(callback: () => Promise<T>): Promise<T> {
-		return this.#transactionLimiter.runWhenFree(async () => {
+	transaction<T>(callback: () => T): Promise<Awaited<T>> {
+		return this.#transactionLimiter.runWhenFree(async (): Promise<Awaited<T>> => {
 			this.request({ type: RequestType.BeginTransaction });
 			try {
 				const ret = await callback();
@@ -210,11 +210,12 @@ class SyncDatabaseConnection implements BaseDatabaseConnection {
 		yield* this.iteratorRequestSync(req);
 	}
 
-	transaction(callback: () => Promise<void>): Promise<void> {
-		return this.#transactionLimiter.runWhenFree(async () => {
+	transaction<T>(callback: () => T): Promise<Awaited<T>> {
+		return this.#transactionLimiter.runWhenFree(async (): Promise<Awaited<T>> => {
 			this.requestSync({ type: RequestType.BeginTransaction });
-			await callback();
+			const ret = await callback();
 			this.requestSync({ type: RequestType.CommitTransaction });
+			return ret;
 		});
 	}
 
