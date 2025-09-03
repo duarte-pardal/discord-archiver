@@ -1,8 +1,8 @@
 import { workerData, parentPort } from "node:worker_threads";
 import { SqliteError } from "better-sqlite3";
-import { IteratorRequest, IteratorResponseFor, RequestType, ResponseFor, SingleRequest } from "./types.js";
+import { IteratorRequest, IteratorResponseFor, RequestType, SingleResponseFor, SingleRequest } from "./types.js";
 import { getRequestHandler } from "./request-handler.js";
-import { LoggingLevel } from "../util/log.js";
+import { LevelName, LoggingLevel } from "../util/log.js";
 
 export const enum WorkerMessageType {
 	Ready,
@@ -15,7 +15,7 @@ export const enum WorkerMessageType {
 export type WorkerReadyMessage = {
 	type: WorkerMessageType.Ready;
 };
-export type WorkerSingleResponseMessage<R extends ResponseFor<SingleRequest>> = {
+export type WorkerSingleResponseMessage<R extends SingleResponseFor<SingleRequest>> = {
 	type: WorkerMessageType.SingleResponse;
 	response: R;
 };
@@ -29,11 +29,12 @@ export type WorkerErrorMessage = {
 };
 export type WorkerLogMessage = {
 	type: WorkerMessageType.Log;
+	level: LevelName;
 	args: unknown[];
 };
 export type WorkerMessage =
 	WorkerReadyMessage |
-	WorkerSingleResponseMessage<ResponseFor<SingleRequest>> |
+	WorkerSingleResponseMessage<SingleResponseFor<SingleRequest>> |
 	WorkerIteratorResponseMessage<IteratorResult<IteratorResponseFor<IteratorRequest>>> |
 	WorkerErrorMessage |
 	WorkerLogMessage;
@@ -47,9 +48,10 @@ process.on("uncaughtExceptionMonitor", (err) => {
 	console.error(err);
 });
 
-function logMessage(...args: unknown[]) {
+function logMessage(level: LevelName, ...args: unknown[]) {
 	parentPort!.postMessage({
 		type: WorkerMessageType.Log,
+		level,
 		args,
 	} satisfies WorkerLogMessage);
 }
@@ -57,14 +59,14 @@ function logMessage(...args: unknown[]) {
 const requestHandler = getRequestHandler({
 	path: workerData.path,
 	log: {
-		log: logMessage,
+		log: undefined as any,
 		maxLevelNumber: workerData.maxLevelNumber,
 		setLevel: undefined as any,
-		error: workerData.maxLevelNumber >= LoggingLevel.Error ? logMessage : undefined,
-		warning: workerData.maxLevelNumber >= LoggingLevel.Warning ? logMessage : undefined,
-		info: workerData.maxLevelNumber >= LoggingLevel.Info ? logMessage : undefined,
-		verbose: workerData.maxLevelNumber >= LoggingLevel.Verbose ? logMessage : undefined,
-		debug: workerData.maxLevelNumber >= LoggingLevel.Debug ? logMessage : undefined,
+		error: workerData.maxLevelNumber >= LoggingLevel.Error ? logMessage.bind(null, "error") : undefined,
+		warning: workerData.maxLevelNumber >= LoggingLevel.Warning ? logMessage.bind(null, "warning") : undefined,
+		info: workerData.maxLevelNumber >= LoggingLevel.Info ? logMessage.bind(null, "info") : undefined,
+		verbose: workerData.maxLevelNumber >= LoggingLevel.Verbose ? logMessage.bind(null, "verbose") : undefined,
+		debug: workerData.maxLevelNumber >= LoggingLevel.Debug ? logMessage.bind(null, "debug") : undefined,
 	},
 });
 
@@ -76,9 +78,15 @@ function messageHandler(req: SingleRequest | IteratorRequest) {
 			return;
 		}
 		if (typeof resp === "object" && resp !== null && Symbol.iterator in resp) {
-			// Implement support for cancellation (return()) if needed
+			const iterator = resp[Symbol.iterator]();
 			while (true) {
-				const result = resp.next();
+				let result;
+				try {
+					result = iterator.next();
+				} catch (err) {
+					iterator.return?.();
+					throw err;
+				}
 				parentPort!.postMessage({
 					type: WorkerMessageType.IteratorResponse,
 					result,

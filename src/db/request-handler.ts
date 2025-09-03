@@ -7,23 +7,26 @@
 import * as fs from "node:fs";
 import * as DT from "../discord-api/types.js";
 import { default as SQLite, Statement, SqliteError } from "better-sqlite3";
-import { SingleRequest, ResponseFor, Timing, RequestType, IteratorRequest, IteratorResponseFor, GetGuildChannelsRequest, GetDMChannelsRequest, GetChannelMessagesRequest, AddSnapshotResult } from "./types.js";
-import { encodeSnowflakeArray, encodeObject, ObjectType, encodeImageHash, decodeObject, encodePermissionOverwrites, decodePermissionOverwrites, decodeImageHash, encodeEmoji, encodeEmojiProps, DiscordEmojiProps } from "./generic-encoding.js";
-import { mapIterator } from "../util/iterators.js";
+import { SingleRequest, SingleResponseFor, Timing, RequestType, IteratorRequest, IteratorResponseFor, AddSnapshotResult, SnapshotResponse } from "./types.js";
+import { encodeSnowflakeArray, encodeObject, ObjectType, encodeImageHash, decodeObject, encodePermissionOverwrites, decodePermissionOverwrites, decodeImageHash, encodeEmoji, encodeEmojiProps, DiscordEmojiProps, decodeEmojiProps, setLogger, decodeSnowflakeArray } from "./generic-encoding.js";
 import { Logger } from "../util/log.js";
+import { snowflakeToTimestamp } from "../discord-api/snowflake.js";
 
-const SNOWFLAKE_LOWER_BOUND = 281474976710656n; // 2n ** 48n
+const SNOWFLAKE_LOWER_BOUND = 1n << 32n;
+const MAX_INT64 = (1n << 63n) - 1n;
 
 export type RequestHandler = {
-	<R extends SingleRequest>(req: R): ResponseFor<R>;
+	<R extends SingleRequest>(req: R): SingleResponseFor<R>;
 	<R extends IteratorRequest>(req: R): IterableIterator<IteratorResponseFor<R>>;
 	<R extends SingleRequest | IteratorRequest>(req: R):
-	R extends SingleRequest ? ResponseFor<R> :
+	R extends SingleRequest ? SingleResponseFor<R> :
 	R extends IteratorRequest ? IterableIterator<IteratorResponseFor<R>> :
 	never;
 };
 
 export function getRequestHandler({ path, log }: { path: string; log?: Logger }): RequestHandler {
+	setLogger(log);
+
 	const db = new SQLite(path, {
 		verbose: log?.debug,
 	});
@@ -46,6 +49,8 @@ export function getRequestHandler({ path, log }: { path: string; log?: Logger })
 		doesExist: Statement;
 		/** Gets the latest snapshot for an object with a given `id`, or all objects if and only if `$getAll` is `1` */
 		getLatestSnapshot: Statement;
+		/** Gets the latest previous snapshot earlier than or at `_timestamp` for an object with a given `id` */
+		getPreviousSnapshot: Statement;
 		/** Checks if the snapshot properties of the latest snapshot are equal to those of the provided object. */
 		isLatestSnapshotEqual: Statement;
 		/** Gets the _timestamp value of the latest snapshot. */
@@ -65,8 +70,6 @@ export function getRequestHandler({ path, log }: { path: string; log?: Logger })
 	type ChildObjectStatements = DeletableObjectStatements & {
 		/** Gets the latest snapshot for all child objects of a given parent */
 		getLatestSnapshotsByParentID: Statement;
-		/** Counts the child objects of a given parent */
-		countObjectsByParentID: Statement;
 		/** Gets the IDs of all non-deleted objects */
 		getNotDeletedObjectIDsByParentID: Statement;
 	};
@@ -74,6 +77,7 @@ export function getRequestHandler({ path, log }: { path: string; log?: Logger })
 	function getStatements(objectName: string, parentIDName: null, snapshotKeys: string[], objectKeys: string[]): DeletableObjectStatements;
 	function getStatements(objectName: string, parentIDName: string, snapshotKeys: string[], objectKeys: string[]): ChildObjectStatements;
 	function getStatements(objectName: string, parentIDName: string | null, snapshotKeys: string[], objectKeys: string[]): DeletableObjectStatements {
+		snapshotKeys.push("_extra");
 		const sk = snapshotKeys.join(", ");
 		const sv = snapshotKeys.map(k => ":" + k).join(", ");
 		const ok = objectKeys.map(k => k + ", ").join("");
@@ -84,6 +88,9 @@ SELECT 1 FROM latest_${objectName}_snapshots WHERE id = :id;
 `),
 			getLatestSnapshot: db.prepare(`\
 SELECT id, _deleted, ${ok} _timestamp, ${sk} FROM latest_${objectName}_snapshots WHERE :$getAll = 1 OR id = :id;
+`),
+			getPreviousSnapshot: db.prepare(`\
+SELECT id, max(_timestamp), ${sk} FROM previous_${objectName}_snapshots WHERE id = :id AND _timestamp <= :_timestamp;
 `),
 			isLatestSnapshotEqual: db.prepare(`\
 SELECT 1 FROM latest_${objectName}_snapshots WHERE id = :id AND ${snapshotKeys.map(k => `${k} IS :${k}`).join(" AND ")};
@@ -111,9 +118,6 @@ UPDATE latest_${objectName}_snapshots SET _deleted = :_deleted WHERE id = :id;
 				getLatestSnapshotsByParentID: db.prepare(`\
 SELECT id, _deleted, ${ok} _timestamp, ${sk} FROM latest_${objectName}_snapshots WHERE ${parentIDName} IS :$parentID;
 `),
-				countObjectsByParentID: db.prepare(`\
-SELECT count(*) FROM latest_${objectName}_snapshots WHERE ${parentIDName} IS :$parentID;
-`),
 				getNotDeletedObjectIDsByParentID: db.prepare(`\
 SELECT id FROM latest_${objectName}_snapshots WHERE ${parentIDName} IS :$parentID AND _deleted IS NULL;
 `),
@@ -124,6 +128,7 @@ SELECT id FROM latest_${objectName}_snapshots WHERE ${parentIDName} IS :$parentI
 	const statements = {
 		beginTransaction: db.prepare("BEGIN;"),
 		commitTransaction: db.prepare("COMMIT;"),
+		rollbackTransaction: db.prepare("ROLLBACK;"),
 		optimize: db.prepare("PRAGMA optimize;"),
 		vacuum: db.prepare("VACUUM;"),
 		getChanges: db.prepare("SELECT changes();"),
@@ -132,9 +137,9 @@ SELECT id FROM latest_${objectName}_snapshots WHERE ${parentIDName} IS :$parentI
 		addWebhookUser: db.prepare("INSERT INTO webhook_users (webhook_id, username, avatar) VALUES (:webhook_id, :username, :avatar);"),
 		getWebhookUser: db.prepare("SELECT webhook_id, username, avatar FROM webhook_users WHERE internal_id = :internal_id;"),
 
-		addAttachment: db.prepare("INSERT OR IGNORE INTO attachments (id, _message_id, filename, description, content_type, size, height, width, ephemeral, duration_secs, waveform) VALUES (:id, :_message_id, :filename, :description, :content_type, :size, :height, :width, :ephemeral, :duration_secs, :waveform);"),
+		addAttachment: db.prepare("INSERT OR IGNORE INTO attachments (id, _extra, _message_id, filename, title, description, content_type, original_content_type, size, height, width, ephemeral, duration_secs, waveform, flags) VALUES (:id, :_extra, :_message_id, :filename, :title, :description, :content_type, :original_content_type, :size, :height, :width, :ephemeral, :duration_secs, :waveform, :flags);"),
+		getAttachment: db.prepare("SELECT id, _extra, _message_id, filename, title, description, content_type, original_content_type, size, height, width, ephemeral, duration_secs, waveform, flags FROM attachments WHERE id = :id;"),
 
-		// findReactionEmoji: db.prepare("SELECT internal_id FROM reaction_emojis WHERE id IS :id;"),
 		addReactionEmoji: db.prepare("INSERT OR IGNORE INTO reaction_emojis (id, name, animated) VALUES (:id, :name, :animated);"),
 		addReactionPlacement: db.prepare("INSERT INTO reactions (message_id, emoji, type, user_id, start, end) VALUES (:message_id, :emoji, :type, :user_id, :start, NULL);"),
 		markReactionAsRemoved: db.prepare("UPDATE reactions SET end = :end WHERE message_id IS :message_id AND emoji IS :emoji AND type IS :type AND user_id IS :user_id AND end IS NULL;"),
@@ -149,15 +154,18 @@ SELECT id FROM latest_${objectName}_snapshots WHERE ${parentIDName} IS :$parentI
 		getLastMessageID: db.prepare("SELECT max(id) FROM latest_message_snapshots WHERE channel_id = :channel_id;"),
 	} as const;
 	const objectStatements = {
-		user: getStatements("user", null, ["username", "discriminator", "global_name", "avatar", "public_flags"], ["bot"]),
-		guild: getStatements("guild", null, ["name", "icon", "splash", "discovery_splash", "owner_id", "afk_channel_id", "afk_timeout", "widget_enabled", "widget_channel_id", "verification_level", "default_message_notifications", "explicit_content_filter", "mfa_level", "system_channel_id", "system_channel_flags", "rules_channel_id", "max_presences", "max_members", "vanity_url_code", "description", "banner", "premium_tier", "premium_subscription_count", "preferred_locale", "public_updates_channel_id", "max_video_channel_users", "nsfw_level", "premium_progress_bar_enabled"], []),
-		role: getStatements("role", "_guild_id", ["name", "color", "hoist", "icon", "unicode_emoji", "position", "permissions", "mentionable", "flags", "tags__integration_id", "tags__subscription_listing_id", "tags__available_for_purchase", "tags__guild_connections"], ["_guild_id", "managed", "tags__bot_id", "tags__premium_subscriber"]),
+		user: getStatements("user", null, ["username", "discriminator", "global_name", "avatar", "public_flags"], ["bot", "system"]),
+		guild: getStatements("guild", null, ["name", "icon", "splash", "discovery_splash", "owner_id", "afk_channel_id", "afk_timeout", "widget_enabled", "widget_channel_id", "verification_level", "default_message_notifications", "explicit_content_filter", "mfa_level", "system_channel_id", "system_channel_flags", "rules_channel_id", "max_presences", "max_members", "vanity_url_code", "description", "banner", "premium_tier", "premium_subscription_count", "preferred_locale", "public_updates_channel_id", "max_video_channel_users", "max_stage_video_channel_users", "nsfw_level", "premium_progress_bar_enabled", "profile__tag", "profile__badge"], []),
+		role: getStatements("role", "_guild_id", ["name", "colors__primary_color", "colors__secondary_color", "colors__tertiary_color", "hoist", "icon", "unicode_emoji", "position", "permissions", "mentionable", "flags", "tags__integration_id", "tags__subscription_listing_id", "tags__available_for_purchase", "tags__guild_connections"], ["_guild_id", "managed", "tags__bot_id", "tags__premium_subscriber"]),
 		member: {
 			doesExist: db.prepare(`\
 SELECT 1 FROM latest_member_snapshots WHERE _user_id = :_user_id AND _guild_id = :_guild_id;
 `),
 			getLatestSnapshot: db.prepare(`\
 SELECT _user_id, _guild_id, _timestamp, nick, avatar, roles, joined_at, premium_since, pending, communication_disabled_until FROM latest_member_snapshots WHERE _user_id = :_user_id AND _guild_id = :_guild_id;
+`),
+			getPreviousSnapshot: db.prepare(`\
+SELECT _user_id, _guild_id, max(_timestamp), nick, avatar, roles, joined_at, premium_since, pending, communication_disabled_until FROM previous_member_snapshots WHERE _user_id = :_user_id AND _guild_id = :_guild_id AND _timestamp <= :_timestamp;
 `),
 			isLatestSnapshotEqual: db.prepare(`
 SELECT 1 FROM latest_member_snapshots WHERE _user_id = :_user_id AND _guild_id = :_guild_id AND nick IS :nick AND avatar IS :avatar AND roles IS :roles AND joined_at IS :joined_at AND premium_since IS :premium_since AND pending IS :pending AND communication_disabled_until IS :communication_disabled_until;
@@ -180,23 +188,14 @@ UPDATE latest_member_snapshots SET _timestamp = :_timestamp, nick = :nick, avata
 SELECT _user_id FROM latest_member_snapshots WHERE _guild_id IS :_guild_id AND joined_at IS NOT NULL;
 `),
 		},
-		channel: getStatements("channel", "guild_id", ["position", "permission_overwrites", "name", "topic", "nsfw", "bitrate", "user_limit", "rate_limit_per_user", "icon", "owner_id", "parent_id", "rtc_region", "video_quality_mode", "thread_metadata__archived", "thread_metadata__auto_archive_duration", "thread_metadata__archive_timestamp", "thread_metadata__locked", "thread_metadata__invitable", "thread_metadata__create_timestamp", "default_auto_archive_duration", "flags", "applied_tags", "default_reaction_emoji", "default_thread_rate_limit_per_user", "default_sort_order", "default_forum_layout"], ["guild_id", "type"]),
+		channel: getStatements("channel", "guild_id", ["position", "permission_overwrites", "name", "topic", "nsfw", "bitrate", "user_limit", "rate_limit_per_user", "icon", "owner_id", "parent_id", "rtc_region", "video_quality_mode", "thread_metadata__archived", "thread_metadata__auto_archive_duration", "thread_metadata__archive_timestamp", "thread_metadata__locked", "thread_metadata__invitable", "thread_metadata__create_timestamp", "default_auto_archive_duration", "flags", "applied_tags", "default_reaction_emoji", "default_thread_rate_limit_per_user", "default_sort_order", "default_forum_layout", "default_tag_setting"], ["guild_id", "type"]),
 		forumTag: getStatements("forum_tag", "channel_id", ["name", "moderated", "emoji"], ["channel_id"]),
 		message: {
-			...getStatements("message", "channel_id", ["content", "flags", "embeds", "components", "_attachment_ids"], ["channel_id", "author__id", "tts", "mention_everyone", "mention_roles", "type", "activity__type", "activity__party_id", "message_reference__message_id", "message_reference__channel_id", "message_reference__guild_id", "interaction__id", "interaction__type", "interaction__name", "interaction__user__id", "_sticker_ids"]),
-			getLatestSnapshotsWithWHUsersByParentID: db.prepare(`\
-SELECT
-channel_id, author__id, tts, mention_everyone, mention_roles, type, activity__type, activity__party_id, message_reference__message_id, message_reference__channel_id, message_reference__guild_id, interaction__id, interaction__type, interaction__name, interaction__user__id, _sticker_ids, content, flags, embeds, components,
-webhook_id, username, avatar
-FROM latest_message_snapshots
-LEFT JOIN webhook_users
-ON latest_message_snapshots.author__id < ${SNOWFLAKE_LOWER_BOUND} AND webhook_users.internal_id = latest_message_snapshots.author__id
-WHERE :$getAll = 1 OR channel_id = :$parentID;
-`),
+			...getStatements("message", "channel_id", ["content", "flags", "_attachment_ids"], ["channel_id", "author__id", "tts", "type", "message_reference__message_id", "message_reference__channel_id", "message_reference__guild_id", "_sticker_ids"]),
 			search: db.prepare(`\
 SELECT
 	latest_message_snapshots._timestamp, latest_message_snapshots._deleted,
-	latest_message_snapshots.id, highlight(message_fts_index, 0, :$startDelimiter, :$endDelimiter) AS content, latest_message_snapshots.flags, latest_message_snapshots.embeds,
+	latest_message_snapshots.id, highlight(message_fts_index, 0, :$startDelimiter, :$endDelimiter) AS content, latest_message_snapshots.flags,
 	latest_message_snapshots.author__id AS user_id, ifnull(latest_user_snapshots.username, webhook_users.username) AS username, latest_user_snapshots.discriminator,
 	latest_message_snapshots.channel_id, channel.name AS channel_name,
 	parent_channel.id AS parent_channel_id, parent_channel.name AS parent_channel_name,
@@ -291,18 +290,198 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _deleted IS NULL AND user__id I
 		}
 	}
 
+	/** Gets the snapshot corresponding to the specified timestamp for a given object. */
+	function getObjectSnapshot<T>(
+		statements: ObjectStatements,
+		id: bigint | string,
+		timestamp: number | null | undefined,
+		decode: (snapshot: any) => T,
+	): SnapshotResponse<T> | undefined {
+		const timing = timestamp == null ? MAX_INT64 : (BigInt(timestamp) << 1n | 1n);
+		const snapshot: any = statements.getLatestSnapshot.get({
+			id,
+			$getAll: 0n,
+		});
+		if (snapshot === undefined) {
+			// There are no snapshots for this object.
+			return undefined;
+		}
+		if (snapshot._timestamp > timing) {
+			const previousPartialSnapshot: any = statements.getPreviousSnapshot.get({ id: snapshot.id, _timestamp: timing });
+			previousPartialSnapshot._timestamp = previousPartialSnapshot["max(_timestamp)"];
+			if (previousPartialSnapshot._timestamp == null) {
+				// There are no snapshots archived before `timestamp`.
+				return undefined;
+			}
+			Object.assign(snapshot, previousPartialSnapshot);
+		}
+		return {
+			timing: decodeTiming(snapshot._timestamp),
+			deletedTiming: decodeTiming(snapshot._deleted),
+			data: decode(snapshot),
+		};
+	}
+
+	/**
+	 * Gets a snapshot corresponding to the specified timestamp for each child of an object.
+	 * @param timestamp The moment in time the returned snapshots are for. If nullish, the latest snapshots are returned.
+	 * @param decode A function to decode the data as stored in the SQL table.
+	 */
+	function getChildrenSnapshot<T>(
+		statements: ChildObjectStatements,
+		parentID: bigint | string,
+		timestamp: number | null | undefined,
+		decode: (snapshot: any) => T,
+	): IterableIterator<SnapshotResponse<T>> {
+		const timing = timestamp == null ? MAX_INT64 : (BigInt(timestamp) << 1n | 1n);
+		return (function* () {
+			for (const result of statements.getLatestSnapshotsByParentID.iterate({
+				$parentID: parentID,
+			})) {
+				const snapshot: any = result;
+				if (snapshot._timestamp > timing) {
+					const previousPartialSnapshot: any = statements.getPreviousSnapshot.get({ id: snapshot.id, _timestamp: timing });
+					previousPartialSnapshot._timestamp = previousPartialSnapshot["max(_timestamp)"];
+					if (previousPartialSnapshot._timestamp == null) {
+						// There are no snapshots archived before `timestamp`.
+						continue;
+					}
+					Object.assign(snapshot, previousPartialSnapshot);
+				}
+				yield {
+					timing: decodeTiming(snapshot._timestamp),
+					deletedTiming: decodeTiming(snapshot._deleted),
+					data: decode(snapshot),
+				};
+			}
+		})();
+	}
+
 	function getChanges(): bigint {
 		return (statements.getChanges.get() as any)["changes()"];
 	}
 
-	function iso8601ToNumber(timestamp: string | null): number {
-		return timestamp == null ? 0 : new Date(timestamp).getTime();
-	}
-	function numberToISO8601(timestamp: number): string | null {
-		return timestamp === 0 ? null : new Date(timestamp).toISOString();
+
+	let cachedChannelID: string;
+	let cachedChannelParentID: string;
+	let cachedChannelGuildID: string;
+	function updateCachedChannel(channelID: string) {
+		const channel: any = objectStatements.channel.getLatestSnapshot.get({ id: channelID, $getAll: 0n });
+		cachedChannelID = String(channel.id);
+		cachedChannelParentID = channel.parent_id === null ? null : channel.parent_id;
+		cachedChannelGuildID = channel.guild_id === null ? null : channel.guild_id;
 	}
 
-	return (req: SingleRequest | IteratorRequest) => {
+	function decodeUser(snapshot: any): DT.PartialUser {
+		const user = decodeObject(ObjectType.User, snapshot);
+		user.discriminator = snapshot.discriminator === null ? "0" : snapshot.discriminator;
+		user.flags = user.public_flags;
+		return user;
+	}
+
+	function decodeMessage(snapshot: any, timestamp: number | null | undefined, channelID: string, includeReferencedMessage: boolean) {
+		const message: DT.Message = decodeObject(ObjectType.Message, snapshot);
+		message.edited_timestamp = snapshot._timestamp === 0n ? null : (new Date(Number(snapshot._timestamp >> 1n)).toISOString());
+		message.timestamp = new Date(Number(snowflakeToTimestamp(snapshot.id))).toISOString();
+		message.pinned = false;
+
+		// Can be computed from the message content but it's irrelevant for now.
+		message.mentions = [];
+		message.mention_roles = [];
+		message.mention_everyone = false;
+
+		if (BigInt(snapshot.author__id) < SNOWFLAKE_LOWER_BOUND) {
+			const webhookUser: any = statements.getWebhookUser.get({ internal_id: snapshot.author__id });
+			message.webhook_id = String(webhookUser.webhook_id);
+			message.author = {
+				id: String(webhookUser.webhook_id),
+				username: webhookUser.username,
+				avatar: webhookUser.avatar === null ? null : decodeImageHash(webhookUser.avatar),
+				discriminator: "0000",
+				public_flags: 0,
+				flags: 0,
+				bot: true,
+				global_name: null,
+			};
+		} else {
+			delete message.webhook_id;
+			message.author = getObjectSnapshot(objectStatements.user, snapshot.author__id, timestamp, decodeUser)!.data;
+		}
+
+		message.attachments = [];
+		for (const id of decodeSnowflakeArray(snapshot._attachment_ids)) {
+			const attachmentSnapshot = statements.getAttachment.get({ id });
+			message.attachments.push(decodeObject(ObjectType.Attachment, attachmentSnapshot));
+		}
+
+		if (
+			snapshot.message_reference__message_id !== null ||
+			snapshot.message_reference__channel_id !== null ||
+			snapshot.message_reference__guild_id !== null
+		) {
+			message.message_reference = {
+				type: (message.flags! & DT.MessageFlag.HasSnapshot) !== 0 ?
+					DT.MessageReferenceType.Forward :
+					DT.MessageReferenceType.Default,
+			};
+
+			if (snapshot.message_reference__message_id !== null) {
+				message.message_reference.message_id = String(snapshot.message_reference__message_id);
+			}
+
+			if (snapshot.message_reference__channel_id === 0n) {
+				message.message_reference.channel_id = channelID;
+			} else if (snapshot.message_reference__channel_id === 1n) {
+				if (cachedChannelID !== channelID) updateCachedChannel(channelID);
+				message.message_reference.channel_id = cachedChannelParentID;
+			} else if (snapshot.message_reference__channel_id !== null) {
+				message.message_reference.channel_id = String(snapshot.message_reference__channel_id);
+			}
+
+			if (snapshot.message_reference__guild_id === 0n) {
+				if (cachedChannelID !== channelID) updateCachedChannel(channelID);
+				message.message_reference.guild_id = String(cachedChannelGuildID);
+			} else if (snapshot.message_reference__guild_id !== null) {
+				message.message_reference.guild_id = String(snapshot.message_reference__guild_id);
+			}
+		}
+
+		if (
+			includeReferencedMessage &&
+			message.message_reference?.message_id != null &&
+			message.message_reference.channel_id != null &&
+			(
+				message.type === DT.MessageType.Reply ||
+				message.type === DT.MessageType.ThreadStarterMessage ||
+				message.type === DT.MessageType.ContextMenuCommand
+			)
+		) {
+			message.referenced_message = getObjectSnapshot(
+				objectStatements.message,
+				message.message_reference.message_id,
+				timestamp,
+				snapshot => decodeMessage(snapshot, timestamp, channelID, false),
+			)?.data ?? null;
+		}
+
+		if (message.interaction_metadata != null) {
+			message.interaction_metadata.user =
+				getObjectSnapshot(objectStatements.user, message.interaction_metadata.user.id, timestamp, decodeUser)!.data;
+			message.interaction = {
+				id: message.interaction_metadata.id,
+				name: message.interaction_metadata.name!,
+				type: message.interaction_metadata.type,
+				user: message.interaction_metadata.user,
+			};
+		}
+		if (message.interaction_metadata?.target_user != null) {
+			message.interaction_metadata.target_user =
+				getObjectSnapshot(objectStatements.user, message.interaction_metadata.target_user.id, timestamp, decodeUser)!.data;
+		}
+		return message;
+	}
+
+	const requestHandler = (req: SingleRequest | IteratorRequest) => {
 		let response: any = undefined;
 		switch (req.type) {
 			case RequestType.Close: {
@@ -316,6 +495,10 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _deleted IS NULL AND user__id I
 			}
 			case RequestType.CommitTransaction: {
 				statements.commitTransaction.run();
+				break;
+			}
+			case RequestType.RollbackTransaction: {
+				statements.rollbackTransaction.run();
 				break;
 			}
 			case RequestType.Optimize: {
@@ -360,6 +543,10 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _deleted IS NULL AND user__id I
 				response = getChanges() > 0;
 				break;
 			}
+			case RequestType.GetRoles: {
+				response = getChildrenSnapshot(objectStatements.role, req.guildID, req.timestamp, (snapshot) => decodeObject(ObjectType.Role, snapshot));
+				break;
+			}
 			case RequestType.SyncGuildMembers: {
 				const timestamp = encodeTiming(req.timing);
 				const stored = objectStatements.member.getCurrentMemberUserIDsByGuildID.all({ _guild_id: req.guildID }) as any[];
@@ -384,7 +571,7 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _deleted IS NULL AND user__id I
 				break;
 			}
 			case RequestType.AddMemberSnapshot: {
-				response = addSnapshot(objectStatements.member, Object.assign(assignTiming(encodeObject(ObjectType.Member, req.member), req.timing), {
+				response = addSnapshot(objectStatements.member, Object.assign(assignTiming(encodeObject(ObjectType.Member, req.member, req.partial), req.timing), {
 					_guild_id: BigInt(req.guildID),
 					_user_id: BigInt(req.userID),
 				}), req.partial);
@@ -442,16 +629,76 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _deleted IS NULL AND user__id I
 				response = getChanges() > 0;
 				break;
 			}
+			case RequestType.GetChannels: {
+				response = getChildrenSnapshot(objectStatements.channel, req.guildID ?? 0n, req.timestamp, (snapshot) => {
+					const channel = decodeObject(ObjectType.Channel, snapshot);
+					channel.guild_id = req.guildID;
+					channel.permission_overwrites = snapshot.permission_overwrites === null ? null : decodePermissionOverwrites(snapshot.permission_overwrites);
+					return channel;
+				});
+				break;
+			}
+			case RequestType.GetThreads: {
+				throw new Error("Unimplemented");
+			}
+			case RequestType.GetForumTags: {
+				response = getChildrenSnapshot(objectStatements.forumTag, req.channelID, req.timestamp, (snapshot) =>
+					Object.assign(decodeObject(ObjectType.ForumTag, snapshot), decodeEmojiProps(snapshot.emoji)),
+				);
+				break;
+			}
 			case RequestType.AddMessageSnapshot: {
+				// Replace user data with references to the users table.
+				// Note: this mutates the original message object.
+				if (req.message.interaction_metadata?.user != null) {
+					requestHandler({
+						type: RequestType.AddUserSnapshot,
+						user: req.message.interaction_metadata.user,
+						timing: {
+							timestamp: req.timestamp,
+							realtime: false,
+						},
+					});
+					(req.message.interaction_metadata.user as any) = { id: req.message.interaction_metadata.user.id };
+				}
+				if (req.message.interaction_metadata?.target_user != null) {
+					requestHandler({
+						type: RequestType.AddUserSnapshot,
+						user: req.message.interaction_metadata.target_user,
+						timing: {
+							timestamp: req.timestamp,
+							realtime: false,
+						},
+					});
+					(req.message.interaction_metadata.target_user as any) = { id: req.message.interaction_metadata.target_user.id };
+				}
+
 				const msg = encodeObject(ObjectType.Message, req.message);
+
 				msg._attachment_ids = encodeSnowflakeArray((req.message.attachments).map(a => a.id));
 				msg._sticker_ids =
 					req.message.sticker_items == null || req.message.sticker_items.length === 0 ?
 						new Uint8Array(0) :
 						encodeSnowflakeArray(req.message.sticker_items.map(s => s.id));
-				if (req.message.webhook_id == null) {
+
+				if (
+					req.message.webhook_id == null ||
+					req.message.webhook_id === req.message.application_id ||
+					req.message.webhook_id === req.message.application?.id
+				) {
+					// The author is a regular user
 					msg.author__id = BigInt(req.message.author.id);
+					requestHandler({
+						type: RequestType.AddUserSnapshot,
+						user: req.message.author,
+						timing: {
+							timestamp: req.timestamp,
+							realtime: false,
+						},
+					});
 				} else {
+					// The author is a webhook user (is stored alongside the message by Discord and may
+					// have different versions with the same ID)
 					const webhookUser = {
 						webhook_id: req.message.webhook_id,
 						username: req.message.author.username,
@@ -459,24 +706,30 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _deleted IS NULL AND user__id I
 					};
 					msg.author__id = (statements.findWebhookUserID.get(webhookUser) as any)?.internal_id ?? statements.addWebhookUser.run(webhookUser).lastInsertRowid;
 				}
+
 				if (req.message.message_reference == null) {
 					msg.message_reference__message_id = null;
 					msg.message_reference__channel_id = null;
 					msg.message_reference__guild_id = null;
 				} else {
-					const isChannelIDRedundant =
-						req.message.type === DT.MessageType.ChannelPinnedMessage || // same channel
-						req.message.type === DT.MessageType.Reply || // same channel
-						req.message.type === DT.MessageType.ThreadStarterMessage; // parent channel
-					const isGuildIDRedundant =
-						isChannelIDRedundant ||
-						req.message.type === DT.MessageType.ThreadCreated; // same guild
+					if (
+						msg.message_reference__channel_id != null ||
+						msg.message_reference__guild_id != null
+					) {
+						updateCachedChannel(req.message.channel_id);
+					}
 
-					msg.message_reference__message_id = req.message.message_reference.message_id;
-					msg.message_reference__channel_id = isChannelIDRedundant ? null : req.message.message_reference.channel_id;
-					msg.message_reference__guild_id = isGuildIDRedundant ? null : req.message.message_reference.guild_id;
+					msg.message_reference__message_id = req.message.message_reference.message_id ?? null;
+					msg.message_reference__channel_id =
+						req.message.message_reference.channel_id == null ? null :
+						req.message.message_reference.channel_id === cachedChannelID ? 0n :
+						req.message.message_reference.channel_id === cachedChannelParentID ? 1n :
+						req.message.message_reference.channel_id;
+					msg.message_reference__guild_id =
+						req.message.message_reference.guild_id == null ? null :
+						req.message.message_reference.guild_id === cachedChannelGuildID ? 0n :
+						req.message.message_reference.guild_id;
 				}
-				msg.interaction__user__id = req.message.interaction?.user.id;
 
 				// Sometimes, when a message contains links, Discord will send a MESSAGE_CREATE
 				// event without embeds and, after fetching the page and loading the embed, a
@@ -493,7 +746,7 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _deleted IS NULL AND user__id I
 				// to send a message with an embed but no links by editing out the link before the
 				// embed loads. In these cases, we add the embeds to the latest snapshot instead of
 				// saving a new snapshot.
-				msg._timestamp = iso8601ToNumber(req.message.edited_timestamp);
+				msg._timestamp = req.message.edited_timestamp == null ? 0 : (BigInt(new Date(req.message.edited_timestamp).getTime()) << 1n | 1n);
 				const snapshot: any = objectStatements.message.getLatestSnapshot.get({
 					$getAll: 0,
 					id: req.message.id,
@@ -603,7 +856,7 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _deleted IS NULL AND user__id I
 			}
 
 			case RequestType.GetFiles: {
-				response = mapIterator(statements.getFile.iterate({ $getAll: 1, url: null }) as IterableIterator<any>, (file) => ({
+				response = Iterator.prototype.map.call(statements.getFile.iterate({ $getAll: 1, url: null }) as IterableIterator<any>, (file) => ({
 					url: file.url,
 					hash: file.content_hash,
 					errorCode: file.error_code,
@@ -663,6 +916,16 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _deleted IS NULL AND user__id I
 				response = objectStatements.guildEmoji.checkForMissingUploaders.get() !== undefined;
 				break;
 			}
+			case RequestType.GetGuildEmojis: {
+				response = getChildrenSnapshot(objectStatements.guildEmoji, req.guildID, req.timestamp, (snapshot) => {
+					const emoji = decodeObject(ObjectType.GuildEmoji, snapshot);
+					if (snapshot.user__id != null) {
+						emoji.user = getObjectSnapshot(objectStatements.user, snapshot.user__id, req.timestamp, decodeUser)!.data;
+					}
+					return emoji;
+				});
+				break;
+			}
 
 			case RequestType.GetLastMessageID: {
 				response = (statements.getLastMessageID.get({
@@ -672,79 +935,15 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _deleted IS NULL AND user__id I
 			}
 
 			case RequestType.GetGuilds: {
-				response = mapIterator(objectStatements.guild.getLatestSnapshot.iterate({ id: 0, $getAll: 1 }) as IterableIterator<any>, (snapshot) => ({
+				response = Iterator.prototype.map.call(objectStatements.guild.getLatestSnapshot.iterate({ id: 0, $getAll: 1 }) as IterableIterator<any>, (snapshot) => ({
 					timing: decodeTiming(snapshot._timestamp),
 					deletedTiming: decodeTiming(snapshot._deleted),
-					guild: decodeObject(ObjectType.Guild, snapshot),
+					data: decodeObject(ObjectType.Guild, snapshot),
 				}));
 				break;
 			}
-			case RequestType.GetDMChannels: {
-				response = mapIterator(objectStatements.channel.getLatestSnapshotsByParentID.iterate({
-					$parentID: 0n,
-				}) as IterableIterator<any>, (snapshot) => {
-					const channel = decodeObject(ObjectType.Channel, snapshot);
-					channel.guild_id = undefined;
-					channel.permission_overwrites = snapshot.permission_overwrites === null ? null : decodePermissionOverwrites(snapshot.permission_overwrites);
-					return {
-						timing: decodeTiming(snapshot._timestamp),
-						deletedTiming: decodeTiming(snapshot._deleted),
-						channel,
-					} satisfies IteratorResponseFor<GetDMChannelsRequest>;
-				});
-				break;
-			}
-			case RequestType.GetGuildChannels: {
-				response = mapIterator(objectStatements.channel.getLatestSnapshotsByParentID.iterate({
-					$parentID: req.guildID,
-				}) as IterableIterator<any>, (snapshot) => {
-					const channel = decodeObject(ObjectType.Channel, snapshot);
-					channel.guild_id = req.guildID;
-					channel.permission_overwrites = snapshot.permission_overwrites === null ? null : decodePermissionOverwrites(snapshot.permission_overwrites);
-					return {
-						timing: decodeTiming(snapshot._timestamp),
-						deletedTiming: decodeTiming(snapshot._deleted),
-						channel,
-					} satisfies IteratorResponseFor<GetGuildChannelsRequest>;
-				});
-				break;
-			}
-			case RequestType.CountChannelMessages: {
-				response = (objectStatements.message.countObjectsByParentID.get({
-					$parentID: req.channelID,
-				}) as any)["count(*)"];
-				break;
-			}
-			case RequestType.GetChannelMessages: {
-				response = mapIterator(objectStatements.message.getLatestSnapshotsWithWHUsersByParentID.iterate({
-					$parentID: req.channelID,
-				}) as IterableIterator<any>, (snapshot) => {
-					const message = decodeObject(ObjectType.Message, snapshot);
-					message.edited_timestamp = numberToISO8601(message.edited_timestamp);
-					if (message.author__id < SNOWFLAKE_LOWER_BOUND) {
-						const webhookUser: any = statements.getWebhookUser.get({ internal_id: message.author__id });
-						message.webhook_id = webhookUser.webhook_id;
-						message.author = {
-							id: webhookUser.webhook_id,
-							username: webhookUser.username,
-							avatar: webhookUser.avatar === null ? null : decodeImageHash(webhookUser.avatar),
-							discriminator: "0000",
-							public_flags: 0,
-							flags: 0,
-							bot: true,
-						};
-					} else {
-						message.webhook_id = null;
-						message.author = {
-							id: message.author__id,
-						};
-					}
-					return {
-						timing: decodeTiming(snapshot._timestamp),
-						deletedTiming: decodeTiming(snapshot._deleted),
-						message,
-					} satisfies IteratorResponseFor<GetChannelMessagesRequest>;
-				});
+			case RequestType.GetMessages: {
+				response = getChildrenSnapshot(objectStatements.message, req.channelID, req.timestamp, snapshot => decodeMessage(snapshot, req.timestamp, req.channelID, true));
 				break;
 			}
 			case RequestType.SearchMessages: {
@@ -761,4 +960,5 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _deleted IS NULL AND user__id I
 		}
 		return response;
 	};
+	return requestHandler;
 }

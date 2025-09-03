@@ -106,9 +106,10 @@ Query examples:
   - **User account support**
     - **Import user account settings from HAR**
   - **Archive stickers and soundboard sounds**
+  - **Archive poll votes**
   - **Archive DM channels**
+  - **Archive applications, interactions (commands) and interaction arguments**
   - **Allow thread enumeration to be interrupted**
-  - **Fix switching accounts on permission changes (or remove multi-account support)**
   - **Archive private threads without manage permission**
   - **Include embeds in the FTS index**
   - **Include image text (OCR) in the FTS index**

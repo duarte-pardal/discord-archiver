@@ -1,39 +1,45 @@
 import { Worker } from "node:worker_threads";
 import { IteratorRequest, IteratorResponseFor, SingleRequest } from "./types.js";
 import { ConcurrencyLimiter } from "../util/concurrency-limiter.js";
-import { RequestType, ResponseFor } from "./types.js";
+import { RequestType, SingleResponseFor } from "./types.js";
 import { WorkerMessage, WorkerMessageType } from "./worker.js";
 import { RequestHandler } from "./request-handler.js";
 import log from "../util/log.js";
-
-type IteratorContext = {
-	resultQueue: IteratorResult<any>[];
-	res: ((result: IteratorResult<IteratorResponseFor<IteratorRequest>>) => void) | undefined;
-	rej: ((error: unknown) => void) | undefined;
-	errored: boolean;
-	error: unknown;
-};
 
 type BaseDatabaseConnection = {
 	errored: boolean;
 	error: unknown;
 	ready: Promise<void>;
 
-	request<R extends SingleRequest>(req: R): Promise<ResponseFor<R>>;
+	request<R extends SingleRequest>(req: R): Promise<SingleResponseFor<R>>;
 	iteratorRequest<R extends IteratorRequest>(req: R): AsyncIterableIterator<IteratorResponseFor<R>>;
 	transaction<T>(callback: () => T): Promise<Awaited<T>>;
 	close(): Promise<void>;
 };
 
+type SingleQueueItem = {
+	type: "single";
+	res: (res?: any) => void;
+	rej: (error: unknown) => void;
+};
+type IteratorQueueItem = {
+	type: "iterator";
+	resultQueue: IteratorResult<any>[];
+	res: ((result: IteratorResult<IteratorResponseFor<IteratorRequest>>) => void) | undefined;
+	rej: ((error: unknown) => void) | undefined;
+	errored: boolean;
+	error: unknown;
+};
+type QueueItem = SingleQueueItem | IteratorQueueItem;
+
 class AsyncDatabaseConnection implements BaseDatabaseConnection {
 	#worker: Worker;
-	#callbackQueue: { res: (res?: any) => void; rej: (error: unknown) => void }[] = [];
+	#queue: QueueItem[] = [];
 	errored = false;
 	error: unknown;
 	ready: Promise<void>;
 	#readyCallbacks: { res: () => void; rej: (error: unknown) => void } | undefined;
 	#transactionLimiter = new ConcurrencyLimiter(1);
-	#iteratorContextQueue: IteratorContext[] = [];
 
 	constructor(path: string) {
 		this.ready = new Promise((res, rej) => {
@@ -47,31 +53,31 @@ class AsyncDatabaseConnection implements BaseDatabaseConnection {
 		});
 		this.#worker.on("message", (msg: WorkerMessage) => {
 			if (msg.type === WorkerMessageType.Log) {
-				log.log(...msg.args);
+				log[msg.level]?.(...msg.args);
 			} else if (msg.type === WorkerMessageType.Ready) {
 				this.#readyCallbacks!.res();
-			} else if (this.#iteratorContextQueue.length > 0) {
+			} else if (this.#queue[0].type === "iterator") {
 				// We are currently receiving the results from an iterator request
-				const ctx = this.#iteratorContextQueue[0];
+				const item = this.#queue[0];
 				if (msg.type === WorkerMessageType.Error) {
-					ctx.errored = true;
-					ctx.error = msg.error;
-					if (ctx.rej !== undefined) {
-						ctx.rej(msg.error);
-						ctx.res = undefined;
-						ctx.rej = undefined;
+					item.errored = true;
+					item.error = msg.error;
+					if (item.rej !== undefined) {
+						item.rej(msg.error);
+						item.res = undefined;
+						item.rej = undefined;
 					}
-					this.#iteratorContextQueue.shift();
+					this.#queue.shift();
 				} else if (msg.type === WorkerMessageType.IteratorResponse) {
-					if (ctx.res !== undefined) {
-						ctx.res(msg.result);
-						ctx.res = undefined;
-						ctx.rej = undefined;
+					if (item.res !== undefined) {
+						item.res(msg.result);
+						item.res = undefined;
+						item.rej = undefined;
 					} else {
-						ctx.resultQueue.push(msg.result);
+						item.resultQueue.push(msg.result);
 					}
 					if (msg.result.done) {
-						this.#iteratorContextQueue.shift();
+						this.#queue.shift();
 					}
 				} else {
 					throw new TypeError("Got invalid response from worker.");
@@ -79,9 +85,9 @@ class AsyncDatabaseConnection implements BaseDatabaseConnection {
 			} else {
 				// We were waiting for the response from a single request
 				if (msg.type === WorkerMessageType.Error) {
-					this.#callbackQueue.shift()!.rej(msg.error);
+					(this.#queue.shift() as SingleQueueItem).rej(msg.error);
 				} else if (msg.type === WorkerMessageType.SingleResponse) {
-					this.#callbackQueue.shift()!.res(msg.response);
+					(this.#queue.shift() as SingleQueueItem).res(msg.response);
 				} else {
 					throw new TypeError("Got invalid response from worker.");
 				}
@@ -89,32 +95,36 @@ class AsyncDatabaseConnection implements BaseDatabaseConnection {
 		});
 		this.#worker.on("exit", () => {
 			if (!this.errored) {
-				this.#callbackQueue.shift()!.res();
+				// Resolve the close request.
+				(this.#queue.shift() as SingleQueueItem).res();
+
+				// Reject all requests made after the close request.
 				this.error = new Error("The database connection was closed.");
 				this.errored = true;
-				for (const { rej } of this.#callbackQueue) {
-					rej(this.error);
+				for (const { rej } of this.#queue) {
+					rej?.(this.error);
 				}
-				this.#callbackQueue.length = 0;
+				this.#queue.length = 0;
 			}
 		});
 		this.#worker.on("error", (error) => {
+			// Reject all requests.
 			this.error = error;
 			this.errored = true;
 			this.#readyCallbacks?.rej(error);
-			for (const { rej } of this.#callbackQueue) {
-				rej(error);
+			for (const { rej } of this.#queue) {
+				rej?.(error);
 			}
-			this.#callbackQueue.length = 0;
+			this.#queue.length = 0;
 		});
 	}
 
-	request<R extends SingleRequest>(req: R): Promise<ResponseFor<R>> {
+	request<R extends SingleRequest>(req: R): Promise<SingleResponseFor<R>> {
 		return new Promise((res, rej) => {
 			if (this.errored) {
 				rej(this.error);
 			} else {
-				this.#callbackQueue.push({ res, rej });
+				this.#queue.push({ type: "single", res, rej });
 				this.#worker.postMessage(req);
 			}
 		});
@@ -132,26 +142,27 @@ class AsyncDatabaseConnection implements BaseDatabaseConnection {
 			};
 		} else {
 			this.#worker.postMessage(req);
-			const ctx: IteratorContext = {
+			const item: IteratorQueueItem = {
+				type: "iterator",
 				resultQueue: [],
 				res: undefined,
 				rej: undefined,
 				errored: false,
 				error: undefined,
 			};
-			this.#iteratorContextQueue.push(ctx);
+			this.#queue.push(item);
 			return {
 				next: () => {
 					return new Promise((res, rej) => {
-						if (ctx.errored) {
-							rej(ctx.error);
-						} else if (ctx.resultQueue.length > 0) {
-							res(ctx.resultQueue.shift()!);
-						} else if (ctx.res !== undefined) {
+						if (item.errored) {
+							rej(item.error);
+						} else if (item.resultQueue.length > 0) {
+							res(item.resultQueue.shift()!);
+						} else if (item.res !== undefined) {
 							throw new Error("next() was called multiple times between results");
 						} else {
-							ctx.res = res as (result: IteratorResult<IteratorResponseFor<IteratorRequest>>) => void;
-							ctx.rej = rej;
+							item.res = res as (result: IteratorResult<IteratorResponseFor<IteratorRequest>>) => void;
+							item.rej = rej;
 						}
 					});
 				},
@@ -170,8 +181,7 @@ class AsyncDatabaseConnection implements BaseDatabaseConnection {
 				this.request({ type: RequestType.CommitTransaction });
 				return ret;
 			} catch (err) {
-				// TODO: Rollback instead
-				this.request({ type: RequestType.CommitTransaction });
+				this.request({ type: RequestType.RollbackTransaction });
 				throw err;
 			}
 		});
@@ -196,10 +206,10 @@ class SyncDatabaseConnection implements BaseDatabaseConnection {
 		this.#requestHandler = requestHandler;
 	}
 
-	requestSync<R extends SingleRequest>(req: R): ResponseFor<R> {
+	requestSync<R extends SingleRequest>(req: R): SingleResponseFor<R> {
 		return this.#requestHandler(req);
 	}
-	async request<R extends SingleRequest>(req: R): Promise<ResponseFor<R>> {
+	async request<R extends SingleRequest>(req: R): Promise<SingleResponseFor<R>> {
 		return this.requestSync(req);
 	}
 

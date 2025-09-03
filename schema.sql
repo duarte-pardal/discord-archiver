@@ -10,6 +10,8 @@
 --   * _deleted: Contains the UNIX timestamp of when the first snapshot where the object was found
 --     to be deleted was taken in bits 1-63 and the least significant bit indicates if the
 --     deletion was caught in a gateway event. NULL if it wasn't deleted.
+--   * _extra: Contains fields that have no corresponding column in the table, in JSON. This is
+--     used when encountering unknown fields. Some known fields are always stored in this column.
 
 BEGIN;
 
@@ -21,9 +23,11 @@ PRAGMA user_version = -1;
 CREATE TABLE latest_user_snapshots (
 	id INTEGER NOT NULL PRIMARY KEY,
 	_deleted INTEGER,
-	bot INTEGER NOT NULL, -- 0 if the user isn't a bot, 1 if it is a bot
+	bot INTEGER NOT NULL,
+	system INTEGER NOT NULL,
 	---
 	_timestamp INTEGER NOT NULL,
+	_extra TEXT,
 	username TEXT NOT NULL, -- the user's username, not unique across the platform
 	discriminator TEXT, -- the user's 4-digit discord-tag, NULL if the user has none (represented as "0" in the API)
 	global_name TEXT, -- the user's display name, if it is set. For bots, this is the application name
@@ -35,6 +39,7 @@ CREATE TABLE latest_user_snapshots (
 CREATE TABLE previous_user_snapshots (
 	id INTEGER NOT NULL REFERENCES latest_user_snapshots (id),
 	_timestamp INTEGER NOT NULL,
+	_extra TEXT,
 	username TEXT NOT NULL, -- the user's username, not unique across the platform
 	discriminator TEXT, -- the user's 4-digit discord-tag, NULL if the user has none (represented as "0" in the API)
 	global_name TEXT, -- the user's display name, if it is set. For bots, this is the application name
@@ -52,6 +57,7 @@ CREATE TABLE latest_guild_snapshots (
 	_deleted INTEGER,
 	---
 	_timestamp INTEGER NOT NULL,
+	_extra TEXT,
 	name TEXT NOT NULL, -- guild name (2-100 characters, excluding trailing and leading whitespace)
 	icon BLOB, -- icon hash
 	splash BLOB, -- splash hash
@@ -78,12 +84,16 @@ CREATE TABLE latest_guild_snapshots (
 	preferred_locale TEXT NOT NULL, -- the preferred locale of a Community guild; used in server discovery and notices from Discord, and sent in interactions; defaults to "en-US"
 	public_updates_channel_id INTEGER, -- the ID of the channel where admins and moderators of Community guilds receive notices from Discord
 	max_video_channel_users INTEGER, -- the maximum amount of users in a video channel
+	max_stage_video_channel_users INTEGER, -- the maximum amount of users in a stage video channel
 	nsfw_level INTEGER NOT NULL, -- guild NSFW level
 	premium_progress_bar_enabled INTEGER NOT NULL, -- whether the guild has the boost progress bar enabled
-	safety_alerts_channel_id INTEGER -- the ID of the channel where admins and moderators of Community guilds receive safety alerts from Discord
+	safety_alerts_channel_id INTEGER, -- the ID of the channel where admins and moderators of Community guilds receive safety alerts from Discord
+	profile__tag TEXT, -- the tag of the guild (2-4 characters)
+	profile__badge TEXT -- the guild badge hash
 );
 CREATE TABLE previous_guild_snapshots (
 	_timestamp INTEGER NOT NULL, -- when this snapshot was taken
+	_extra TEXT,
 	id INTEGER NOT NULL REFERENCES latest_guild_snapshots (id),
 	name TEXT, -- guild name (2-100 characters, excluding trailing and leading whitespace)
 	icon BLOB, -- icon hash
@@ -111,9 +121,12 @@ CREATE TABLE previous_guild_snapshots (
 	preferred_locale TEXT NOT NULL, -- the preferred locale of a Community guild; used in server discovery and notices from Discord, and sent in interactions; defaults to "en-US"
 	public_updates_channel_id INTEGER, -- the ID of the channel where admins and moderators of Community guilds receive notices from Discord
 	max_video_channel_users INTEGER, -- the maximum amount of users in a video channel
+	max_stage_video_channel_users INTEGER, -- the maximum amount of users in a stage video channel
 	nsfw_level INTEGER NOT NULL, -- guild NSFW level
 	premium_progress_bar_enabled INTEGER NOT NULL, -- whether the guild has the boost progress bar enabled
 	safety_alerts_channel_id INTEGER, -- the ID of the channel where admins and moderators of Community guilds receive safety alerts from Discord
+	profile__tag TEXT, -- the tag of the guild (2-4 characters)
+	profile__badge TEXT, -- the guild badge hash
 	PRIMARY KEY (id, _timestamp)
 ) WITHOUT ROWID;
 
@@ -127,8 +140,11 @@ CREATE TABLE latest_role_snapshots (
 	tags__premium_subscriber INTEGER, -- whether this is the guild's Booster role
 	---
 	_timestamp INTEGER NOT NULL,
+	_extra TEXT,
 	name TEXT NOT NULL, -- role name
-	color INTEGER NOT NULL, -- integer representation of hexadecimal color code
+	colors__primary_color INTEGER NOT NULL, -- the primary color for the role
+	colors__secondary_color INTEGER, -- the secondary color for the role, this will make the role a gradient between the other provided colors
+	colors__tertiary_color INTEGER, -- the tertiary color for the role, this will turn the gradient into a holographic style
 	hoist INTEGER NOT NULL, -- if this role is pinned in the user listing
 	icon BLOB, -- role icon hash
 	unicode_emoji TEXT, -- role unicode emoji
@@ -145,8 +161,11 @@ CREATE INDEX role_by_guild_id ON latest_role_snapshots (_guild_id);
 CREATE TABLE previous_role_snapshots (
 	id INTEGER NOT NULL REFERENCES latest_role_snapshots (id),
 	_timestamp INTEGER NOT NULL,
+	_extra TEXT,
 	name TEXT NOT NULL, -- role name
-	color INTEGER NOT NULL, -- integer representation of hexadecimal color code
+	colors__primary_color INTEGER NOT NULL, -- the primary color for the role
+	colors__secondary_color INTEGER, -- the secondary color for the role, this will make the role a gradient between the other provided colors
+	colors__tertiary_color INTEGER, -- the tertiary color for the role, this will turn the gradient into a holographic style
 	hoist INTEGER NOT NULL, -- if this role is pinned in the user listing
 	icon TEXT, -- role icon hash
 	unicode_emoji TEXT, -- role unicode emoji
@@ -169,6 +188,7 @@ CREATE TABLE latest_member_snapshots (
 	_guild_id INTEGER NOT NULL REFERENCES latest_guild_snapshots (id),
 	---
 	_timestamp INTEGER NOT NULL,
+	_extra TEXT,
 	nick TEXT, -- this user's guild nickname
 	avatar BLOB, -- the member's guild avatar hash
 	roles BLOB, -- array of role IDs
@@ -184,6 +204,7 @@ CREATE TABLE previous_member_snapshots (
 	_user_id INTEGER NOT NULL, -- the user ID, not present in the Discord object
 	_guild_id INTEGER NOT NULL,
 	_timestamp INTEGER NOT NULL,
+	_extra TEXT,
 	nick TEXT, -- this user's guild nickname
 	avatar BLOB, -- the member's guild avatar hash
 	roles BLOB, -- array of role IDs
@@ -205,38 +226,7 @@ CREATE TABLE latest_channel_snapshots (
 	guild_id INTEGER, -- the ID of the guild, 0 for DM channels and NULL for threads
 	---
 	_timestamp INTEGER NOT NULL,
-	position INTEGER, -- sorting position of the channel
-	permission_overwrites BLOB, -- explicit permission overwrites for members and roles
-	name TEXT, -- the name of the channel (1-100 characters)
-	topic TEXT, -- the channel topic (0-1024 characters)
-	nsfw INTEGER, -- whether the channel is nsfw
-	bitrate INTEGER, -- the bitrate (in bits) of the voice channel
-	user_limit INTEGER, -- the user limit of the voice channel
-	rate_limit_per_user INTEGER, -- amount of seconds a user has to wait before sending another message (0-21600); bots, as well as users with the permission manage_messages or manage_channel, are unaffected
-	icon TEXT, -- icon hash of the group DM
-	owner_id INTEGER, -- ID of the creator of the group DM or thread
-	-- `application_id` and `managed` are missing because they're not useful
-	parent_id INTEGER, -- for guild channels: ID of the parent category for a channel (each parent category can contain up to 50 channels), for threads: ID of the text channel this thread was created
-	rtc_region TEXT, -- voice region ID for the voice channel, automatic when set to null
-	video_quality_mode INTEGER, -- the camera video quality mode of the voice channel, 1 when not present
-	thread_metadata__archived INTEGER, -- whether the thread is archived
-	thread_metadata__auto_archive_duration INTEGER, -- the thread will stop showing in the channel list after auto_archive_duration minutes of inactivity, can be set to: 60, 1440, 4320, 10080
-	thread_metadata__archive_timestamp INTEGER, -- timestamp when the thread's archive status was last changed, used for calculating recent activity
-	thread_metadata__locked INTEGER, -- whether the thread is locked; when a thread is locked, only users with MANAGE_THREADS can unarchive it
-	thread_metadata__invitable INTEGER, -- whether non-moderators can add other non-moderators to a thread; only available on private threads
-	thread_metadata__create_timestamp INTEGER, -- timestamp when the thread was created; only populated for threads created after 2022-01-09
-	default_auto_archive_duration INTEGER, -- default duration that the clients (not the API) will use for newly created threads, in minutes, to automatically archive the thread after recent activity, can be set to: 60, 1440, 4320, 10080
-	flags INTEGER, -- channel flags combined as a bitfield
-	applied_tags BLOB, -- IDs of the set of tags that have been applied to a thread in a GUILD_FORUM or a GUILD_MEDIA channel
-	default_reaction_emoji BLOB, -- the ID of a guild's custom emoji (if INTEGER) or the unicode character of the emoji (if TEXT) to show in the add reaction button on a thread in a GUILD_FORUM channel
-	default_thread_rate_limit_per_user INTEGER, -- the initial rate_limit_per_user to set on newly created threads in a channel. this field is copied to the thread at creation time and does not live update
-	default_sort_order INTEGER, -- the default sort order type used to order posts in GUILD_FORUM channels. Defaults to null, which indicates a preferred sort order hasn't been set by a channel admin
-	default_forum_layout INTEGER -- the default forum layout view used to display posts in GUILD_FORUM channels. Defaults to 0, which indicates a layout view has not been set by a channel admin
-);
-CREATE INDEX channel_by_guild_id ON latest_channel_snapshots (guild_id) WHERE guild_id IS NOT NULL;
-CREATE TABLE previous_channel_snapshots (
-	id INTEGER NOT NULL REFERENCES latest_channel_snapshots (id),
-	_timestamp INTEGER NOT NULL,
+	_extra TEXT,
 	position INTEGER, -- sorting position of the channel
 	permission_overwrites BLOB, -- explicit permission overwrites for members and roles
 	name TEXT, -- the name of the channel (1-100 characters)
@@ -264,6 +254,41 @@ CREATE TABLE previous_channel_snapshots (
 	default_thread_rate_limit_per_user INTEGER, -- the initial rate_limit_per_user to set on newly created threads in a channel. this field is copied to the thread at creation time and does not live update
 	default_sort_order INTEGER, -- the default sort order type used to order posts in GUILD_FORUM channels. Defaults to null, which indicates a preferred sort order hasn't been set by a channel admin
 	default_forum_layout INTEGER, -- the default forum layout view used to display posts in GUILD_FORUM channels. Defaults to 0, which indicates a layout view has not been set by a channel admin
+	default_tag_setting TEXT -- the default tag matching behavior
+);
+CREATE INDEX channel_by_guild_id ON latest_channel_snapshots (guild_id) WHERE guild_id IS NOT NULL;
+CREATE TABLE previous_channel_snapshots (
+	id INTEGER NOT NULL REFERENCES latest_channel_snapshots (id),
+	_timestamp INTEGER NOT NULL,
+	_extra TEXT,
+	position INTEGER, -- sorting position of the channel
+	permission_overwrites BLOB, -- explicit permission overwrites for members and roles
+	name TEXT, -- the name of the channel (1-100 characters)
+	topic TEXT, -- the channel topic (0-1024 characters)
+	nsfw INTEGER, -- whether the channel is nsfw
+	bitrate INTEGER, -- the bitrate (in bits) of the voice channel
+	user_limit INTEGER, -- the user limit of the voice channel
+	rate_limit_per_user INTEGER, -- amount of seconds a user has to wait before sending another message (0-21600); bots, as well as users with the permission manage_messages or manage_channel, are unaffected
+	icon TEXT, -- icon hash of the group DM
+	owner_id INTEGER, -- ID of the creator of the group DM or thread
+	-- `application_id` and `managed` are missing because they're not useful
+	parent_id INTEGER, -- for guild channels: ID of the parent category for a channel (each parent category can contain up to 50 channels), for threads: ID of the text channel this thread was created
+	rtc_region TEXT, -- voice region ID for the voice channel, automatic when set to null
+	video_quality_mode INTEGER, -- the camera video quality mode of the voice channel, 1 when not present
+	thread_metadata__archived INTEGER, -- whether the thread is archived
+	thread_metadata__auto_archive_duration INTEGER, -- the thread will stop showing in the channel list after auto_archive_duration minutes of inactivity, can be set to: 60, 1440, 4320, 10080
+	thread_metadata__archive_timestamp INTEGER, -- timestamp when the thread's archive status was last changed, used for calculating recent activity
+	thread_metadata__locked INTEGER, -- whether the thread is locked; when a thread is locked, only users with MANAGE_THREADS can unarchive it
+	thread_metadata__invitable INTEGER, -- whether non-moderators can add other non-moderators to a thread; only available on private threads
+	thread_metadata__create_timestamp INTEGER, -- timestamp when the thread was created; only populated for threads created after 2022-01-09
+	default_auto_archive_duration INTEGER, -- default duration that the clients (not the API) will use for newly created threads, in minutes, to automatically archive the thread after recent activity, can be set to: 60, 1440, 4320, 10080
+	flags INTEGER, -- channel flags combined as a bitfield
+	applied_tags BLOB, -- IDs of the set of tags that have been applied to a thread in a GUILD_FORUM or a GUILD_MEDIA channel
+	default_reaction_emoji BLOB, -- the ID of a guild's custom emoji (if INTEGER) or the unicode character of the emoji (if TEXT) to show in the add reaction button on a thread in a GUILD_FORUM channel
+	default_thread_rate_limit_per_user INTEGER, -- the initial rate_limit_per_user to set on newly created threads in a channel. this field is copied to the thread at creation time and does not live update
+	default_sort_order INTEGER, -- the default sort order type used to order posts in GUILD_FORUM channels. Defaults to null, which indicates a preferred sort order hasn't been set by a channel admin
+	default_forum_layout INTEGER, -- the default forum layout view used to display posts in GUILD_FORUM channels. Defaults to 0, which indicates a layout view has not been set by a channel admin
+	default_tag_setting TEXT, -- the default tag matching behavior
 	PRIMARY KEY (id, _timestamp)
 ) WITHOUT ROWID;
 
@@ -273,6 +298,7 @@ CREATE TABLE latest_forum_tag_snapshots (
 	channel_id INTEGER REFERENCES latest_channel_snapshots (id), -- the ID of the forum channel
 	---
 	_timestamp INTEGER NOT NULL,
+	_extra TEXT,
 	name TEXT NOT NULL, -- the name of the tag (0-20 characters)
 	moderated INTEGER NOT NULL, -- whether this tag can only be added to or removed from threads by a member with the MANAGE_THREADS permission
 	emoji -- custom emoji ID (INTEGER) or Unicode emoji (TEXT)
@@ -280,6 +306,7 @@ CREATE TABLE latest_forum_tag_snapshots (
 CREATE TABLE previous_forum_tag_snapshots (
 	id INTEGER NOT NULL REFERENCES latest_forum_tag_snapshots (id),
 	_timestamp INTEGER NOT NULL,
+	_extra TEXT,
 	name TEXT NOT NULL, -- the name of the tag (0-20 characters)
 	moderated INTEGER NOT NULL, -- whether this tag can only be added to or removed from threads by a member with the MANAGE_THREADS permission
 	emoji, -- custom emoji ID (INTEGER) or Unicode emoji (TEXT)
@@ -298,25 +325,16 @@ CREATE TABLE latest_message_snapshots (
 	channel_id INTEGER NOT NULL REFERENCES latest_channel_snapshots (id), -- ID of the channel the message was sent in
 	author__id INTEGER NOT NULL, -- ID of the user who sent the message or internal ID of the webhook user
 	tts INTEGER NOT NULL, -- whether this was a TTS message
-	mention_everyone INTEGER NOT NULL, -- whether this message mentions everyone
-	mention_roles BLOB NOT NULL, -- IDs of the roles specifically mentioned in this message, stored as 64-bit big-endian integers concatenated
 	type INTEGER NOT NULL, -- type of message
-	activity__type INTEGER, -- type of message activity
-	activity__party_id TEXT, -- partyId from a Rich Presence event
 	message_reference__message_id INTEGER, -- ID of the originating message
 	message_reference__channel_id INTEGER, -- ID of the originating message's channel
 	message_reference__guild_id INTEGER, -- ID of the originating message's guild
-	interaction__id INTEGER, -- ID of the interaction this message is a response to
-	interaction__type INTEGER, -- the type of the interaction this message is a response to
-	interaction__name TEXT, -- the name of the application command this message is a response to
-	interaction__user__id INTEGER, -- the user who invoked the interaction this message is a response to
 	_sticker_ids BLOB NOT NULL, -- IDs of the stickers in the message, stored as 64-bit big-endian integers concatenated
 	---
-	_timestamp INTEGER NOT NULL, -- edited_timestamp if the message was edited, 0 if not. The least significant bit has no special meaning.
+	_timestamp INTEGER NOT NULL, -- `edited_timestamp` in _timestamp format with the least significant bit always set to 1
+	_extra TEXT,
 	content TEXT, -- contents of the message
 	flags INTEGER, -- message flags combined as a bitfield
-	embeds TEXT, -- any embedded content, stored as JSON
-	components TEXT, -- components like buttons, action rows, or other interactive components, stored as JSON
 	_attachment_ids BLOB -- IDs of the attachments in the message, stored as 64-bit big-endian integers concatenated
 );
 CREATE INDEX message_by_channel_id ON latest_message_snapshots (channel_id);
@@ -334,11 +352,10 @@ CREATE TRIGGER latest_message_snapshots_au AFTER UPDATE ON latest_message_snapsh
 END;
 CREATE TABLE previous_message_snapshots (
 	id INTEGER NOT NULL REFERENCES latest_message_snapshots (id),
-	_timestamp INTEGER NOT NULL, -- edited_timestamp if the message was edited, 0 if not. The least significant bit is just the least significant bit of the timestamp.
+	_timestamp INTEGER NOT NULL, -- `edited_timestamp` in _timestamp format with the least significant bit always set to 1
+	_extra TEXT,
 	content TEXT, -- contents of the message
 	flags INTEGER, -- message flags combined as a bitfield
-	embeds TEXT, -- any embedded content, stored as JSON
-	components TEXT, -- components like buttons, action rows, or other interactive components, stored as JSON
 	_attachment_ids BLOB, -- IDs of the attachments in the message, stored as 64-bit big-endian integers concatenated
 	UNIQUE (id, _timestamp)
 );
@@ -355,12 +372,14 @@ CREATE TABLE webhook_users (
 -- Apparently, all properties of attachments are immutable
 CREATE TABLE attachments (
 	id INTEGER NOT NULL PRIMARY KEY,
+	_extra TEXT,
 	_message_id INTEGER NOT NULL REFERENCES latest_message_snapshots (id), -- the ID of the parent message
 	filename TEXT NOT NULL, -- name of file attached
+	title TEXT, -- the original filename (before special characters get replaced) without the file extension
 	description TEXT, -- description for the file
 	content_type TEXT, -- the attachment's media type
+	original_content_type TEXT,
 	size INTEGER NOT NULL, -- size of file in bytes
-	-- `url` and `proxy_url` are omitted because they can be generated from other data
 	height INTEGER, -- height of file (if image)
 	width INTEGER, -- width of file (if image)
 	ephemeral INTEGER NOT NULL, -- whether this attachment is ephemeral
@@ -395,12 +414,14 @@ CREATE TABLE latest_guild_emoji_snapshots (
 	animated INTEGER NOT NULL, -- Whether this emoji is animated
 	---
 	_timestamp INTEGER NOT NULL,
+	_extra TEXT,
 	name TEXT NOT NULL,
 	roles BLOB -- IDs of roles allowed to use this emoji
 );
 CREATE TABLE previous_guild_emoji_snapshots (
 	id INTEGER NOT NULL REFERENCES latest_guild_emoji_snapshots (id),
 	_timestamp INTEGER NOT NULL,
+	_extra TEXT,
 	name TEXT NOT NULL,
 	roles BLOB, -- IDs of roles allowed to use this emoji
 	PRIMARY KEY (id, _timestamp)
@@ -409,6 +430,7 @@ CREATE TABLE previous_guild_emoji_snapshots (
 -- Contains information about downloaded files. These may include attachments, profile pictures
 -- and embedded media from external sites.
 CREATE TABLE files (
+	-- The query parameters of attachment URLs are removed before they are stored here.
 	url TEXT NOT NULL PRIMARY KEY,
 	-- content_hash is NULL if and only if error_code is not NULL.
 	content_hash BLOB,

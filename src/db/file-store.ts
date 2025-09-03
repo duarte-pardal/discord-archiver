@@ -19,7 +19,6 @@ import * as path from "node:path";
 import { Logger } from "../util/log.js";
 import { DatabaseConnection, RequestType } from "../db/index.js";
 import { abortError } from "../util/abort.js";
-import { mapIterator } from "../util/iterators.js";
 
 export type PendingFileResult =
 	{
@@ -156,7 +155,7 @@ export class FileStore {
 	async close(): Promise<void> {
 		const ongoingAcquisitions = [...this.#ongoingAcquisitions.values()];
 		if (ongoingAcquisitions.some(a => a.abortPromise === undefined)) {
-			throw new Error("Can't close the file store while there are ongoing file acquisitions");
+			throw new Error("Can't close the file store while there are ongoing file acquisitions, except for those that are aborting.");
 		}
 		await Promise.allSettled(ongoingAcquisitions.map(a => a.abortPromise));
 		if (this.#ongoingAcquisitions.size !== 0 || this.#pendingFileNames.size !== 0) {
@@ -190,7 +189,7 @@ export class FileStore {
 		const extraFiles = filesInFileStore.difference(hashesInDB);
 
 		if (deleteExtraFiles) {
-			await Promise.all(mapIterator(extraFiles.values(), hash => fs.promises.unlink(`${this.#basePath}/${hash}`)));
+			await Promise.all(extraFiles.values().map(hash => fs.promises.unlink(`${this.#basePath}/${hash}`)));
 		}
 
 		return {

@@ -20,6 +20,25 @@ export type AvatarDecorationData = {
 	sku_id: string;
 };
 
+export type PrimaryGuild = {
+	/** The ID of the user's primary guild */
+	identity_guild_id: string | null;
+	/**
+	 * Whether the user is displaying the primary guild's server tag
+	 *
+	 * This can be `null` if the system clears the identity, e.g. the server no longer supports
+	 * tags. This will be `false` if the user manually removes their tag. */
+	identity_enabled: boolean | null;
+	/**
+	 * The text of the user's server tag
+	 *
+	 * Limited to 4 characters.
+	 */
+	tag: string | null;
+	/** The server tag badge hash */
+	badge: string | null;
+};
+
 export type PartialUser = {
 	/** The user's ID */
 	id: string;
@@ -31,25 +50,57 @@ export type PartialUser = {
 	global_name: string | null;
 	/** The user's avatar hash */
 	avatar: string | null;
+	display_name_styles?: unknown;
+	linked_users?: unknown;
 	/** Whether the user belongs to an OAuth2 application */
 	bot?: boolean;
+	/** Whether the user is an Official Discord System user (part of the urgent message system) */
+	system?: boolean;
+	/** The user's banner color encoded as an integer representation of a hexadecimal color code */
+	accent_color?: number | null;
+	/**
+	 * The flags on a user's account
+	 *
+	 * This should be equal to `public_flags`.
+	 */
+	flags?: number;
 	/** The public flags on a user's account */
 	public_flags?: number;
 	/** The data for the user's avatar decoration */
 	avatar_decoration_data?: AvatarDecorationData | null;
+	/** Data for the user's collectibles */
+	collectibles?: unknown;
+	/** @deprecated */
+	clan?: PrimaryGuild | null;
+	/** Data for the user's collectibles */
+	primary_guild?: PrimaryGuild | null;
+	display_name?: unknown;
 };
 
 /**
  * User object returned from the `/users/{id}` and `/users/{id}/profile` endpoints
  *
- * These additional properties may also be present on partial user objects but they are always set
- * to `null`.
+ * Some of these additional properties may also be present on partial user objects but they might
+ * be incorrectly set to `null`.
  */
 export type User = PartialUser & {
 	/** The user's banner hash */
 	banner?: string | null;
+	banner_color?: unknown;
 	/** The user's banner color encoded as an integer representation of hexadecimal color code */
 	accent_color?: number | null;
+	pronouns?: string;
+	bio?: string;
+};
+
+//#endregion
+
+
+//#region Applications
+
+type Application = {
+	id: string;
+	// TODO
 };
 
 //#endregion
@@ -58,6 +109,7 @@ export type User = PartialUser & {
 //#region Attachments
 
 export const enum AttachmentFlag {
+	None = 0,
 	/** This attachment has been edited using the remix feature on mobile */
 	IsRemix = 1 << 2,
 }
@@ -67,12 +119,14 @@ export type Attachment = {
 	id: string;
 	/** Name of file attached */
 	filename: string;
-	/** The title of the file */
+	/** The original filename (before special characters get replaced) without the file extension */
 	title?: string;
 	/** Description for the file */
 	description?: string;
 	/** The attachment's media type */
 	content_type?: string;
+	// Undocumented
+	original_content_type?: string;
 	/** Size of file in bytes */
 	size: number;
 	/** Source url of file */
@@ -83,6 +137,12 @@ export type Attachment = {
 	height?: number | null;
 	/** Width of file (if image) */
 	width?: number | null;
+	/** The version of the explicit content scan filter this attachment was scanned with */
+	content_scan_version?: number;
+	/** The attachment placeholder protocol version (currently 1) */
+	placeholder_version?: number;
+	/** A low-resolution thumbhash of the attachment, to display before it is loaded */
+	placeholder?: string;
 	/** Whether this attachment is ephemeral */
 	ephemeral?: boolean;
 	/** The duration of the audio file (currently for voice messages) */
@@ -91,6 +151,15 @@ export type Attachment = {
 	waveform?: string;
 	/** Attachment flags combined as a bitfield */
 	flags?: AttachmentFlag;
+	// `is_*` fields are send-only
+	/** The IDs of the participants in the clip (max 100) */
+	clip_created_at?: boolean;
+	// `clip_participant_ids` is send-only
+	/** The participants in the clip (max 100) */
+	clip_participants?: boolean;
+	// `application_id` is send-only
+	/** The application the clip was taken in */
+	application?: Application;
 };
 
 export const enum InteractionType {
@@ -142,9 +211,12 @@ export const enum MessageType {
 	GuildIncidentAlertModeDisabled = 37,
 	GuildIncidentReportRaid = 38,
 	GuildIncidentReportFalseAlarm = 39,
+	PurchaseNotification = 44,
+	PollResult = 46,
 }
 
-export const enum MessageFlags {
+export const enum MessageFlag {
+	None = 0,
 	/** This message has been published to subscribed channels (via Channel Following) */
 	Crossposted = 1 << 0,
 	/** This message originated from a message in another channel (via Channel Following) */
@@ -167,6 +239,10 @@ export const enum MessageFlags {
 	SuppressNotifications = 1 << 12,
 	/** This message is a voice message */
 	IsVoiceMessage = 1 << 13,
+	/** This message has a snapshot (via Message Forwarding) */
+	HasSnapshot = 1 << 14,
+	/** This message contains components from version 2 of the UI kit */
+	IsComponentsV2 = 1 << 15,
 }
 
 export type Reaction = {
@@ -219,13 +295,13 @@ export const enum MessageReferenceType {
 
 export type MessageReference = {
 	/** Type of reference */
-	type: MessageReferenceType;
+	type?: MessageReferenceType;
 	/** ID of the originating message */
-	message_id: string;
+	message_id?: string;
 	/** ID of the originating message's channel */
-	channel_id: string;
+	channel_id?: string;
 	/** ID of the originating message's guild */
-	guild_id: string;
+	guild_id?: string;
 };
 
 export type Embed = {
@@ -239,7 +315,8 @@ export type Embed = {
 		"gifv" |
 		"article" |
 		"link" |
-		"poll_result";
+		"poll_result" |
+		"auto_moderation_notification";
 	/** Description of embed */
 	description?: string;
 	/** URL of embed */
@@ -247,7 +324,7 @@ export type Embed = {
 	/** Timestamp of embed content */
 	timestamp?: string;
 	/** Color code of the embed */
-	color?: string;
+	color?: number;
 	/** Footer information */
 	footer?: {
 		/** Footer text */
@@ -264,9 +341,9 @@ export type Embed = {
 		/** A proxied URL of the image */
 		proxy_url?: string;
 		/** Height of image */
-		height: string;
+		height: number;
 		/** Width of image */
-		width: string;
+		width: number;
 	};
 	/** Thumbnail information */
 	thumbnail?: {
@@ -275,9 +352,9 @@ export type Embed = {
 		/** A proxied URL of the thumbnail */
 		proxy_url?: string;
 		/** Height of thumbnail */
-		height: string;
+		height: number;
 		/** Width of thumbnail */
-		width: string;
+		width: number;
 	};
 	/** Video information */
 	video?: {
@@ -286,9 +363,9 @@ export type Embed = {
 		/** A proxied URL of the video */
 		proxy_url?: string;
 		/** Height of video */
-		height: string;
+		height: number;
 		/** Width of video */
-		width: string;
+		width: number;
 	};
 	/** Provider information */
 	provider?: {
@@ -316,14 +393,63 @@ export type Embed = {
 		value: string;
 		/** Whether or not this field should display inline */
 		inline?: boolean;
-	};
+	}[];
 };
 
-type MessageBase = {
+export type MessageInteractionMetadata = {
+	/** ID of the interaction */
+	id: string;
+	/** Type of interaction */
+	type: InteractionType;
+	/**
+	 * The name of the application command executed (including subcommands and subcommand groups),
+	 * present only on `APPLICATION_COMMAND` interactions
+	 */
+	name?: string;
+	/**
+	 * The type of application command executed, present only on APPLICATION_COMMAND interactions
+	 */
+	command_type?: number;
+	/** The reason this interaction is ephemeral */
+	ephemerality_reason?: number;
+	/** User who triggered the interaction */
+	user: PartialUser;
+	/**
+	 * IDs for installation context(s) related to an interaction
+	 *
+	 * Irrelevant.
+	 */
+	authorizing_integration_owners: unknown;
+	/** ID of the original response message, present only on follow-up messages */
+	original_response_message_id?: string;
+	/**
+	 * ID of the message that contained interactive component, present only on messages created from
+	 * component interactions
+	 */
+	interacted_message_id?: string;
+	/**
+	 * Metadata for the interaction that was used to open the modal, present only on MODAL_SUBMIT
+	 * interactions
+	 */
+	triggering_interaction_metadata?: MessageInteractionMetadata;
+	/** The user the command was run on, present only on user command interactions */
+	target_user?: PartialUser;
+	/**
+	 * The ID of the message the command was run on, present only on message command interactions
+	 *
+	 * The original response message will also have `message_reference` and `referenced_message`
+	 * pointing to this message.
+	 */
+	target_message_id?: string;
+};
+
+export type Message = {
 	/** ID of the message */
 	id: string;
 	/** ID of the channel the message was sent in */
 	channel_id: string;
+	/** The author of this message (not guaranteed to be a valid user if the message was sent by a webhook) */
+	author: PartialUser;
 	/** Text content of the message */
 	content: string;
 	/** When this message was sent */
@@ -338,6 +464,8 @@ type MessageBase = {
 	mentions: PartialUser[];
 	/** Roles specifically mentioned in this message */
 	mention_roles: string[];
+	/** Channels specifically mentioned in this message */
+	mention_channels?: unknown[];
 	/** Any attached files */
 	attachments: Attachment[];
 	/** Any embedded content */
@@ -346,18 +474,20 @@ type MessageBase = {
 	reactions?: Reaction[];
 	/** Whether this message is pinned */
 	pinned: boolean;
+	/** If the message is generated by a webhook, this is the webhook's ID */
+	webhook_id?: string;
 	/** Type of message */
 	type: MessageType;
 	/** Sent with Rich Presence-related chat embeds */
 	activity?: MessageActivity;
 	/** Sent with Rich Presence-related chat embeds */
-	application?: unknown;
+	application?: Application;
 	/** If the message is a response to an Interaction, this is the ID of the interaction's application */
 	application_id?: string;
 	/** Reference data sent with crossposted messages, replies, pins, and thread starter messages */
 	message_reference?: MessageReference;
 	/** Message flags combined as a bitfield */
-	flags?: MessageFlags;
+	flags?: MessageFlag;
 	/**
 	 * The message associated with the `message_reference`
 	 *
@@ -379,24 +509,9 @@ type MessageBase = {
 		member?: GuildMember;
 	};
 	/**
-	 * Still in preview. May not exist on some interaction responses.
+	 * Sent if the message is sent as a result of an interaction
 	 */
-	interaction_metadata?: {
-		/** ID of the interaction */
-		id: string;
-		/** Type of interaction */
-		type: InteractionType;
-		/** User who triggered the interaction */
-		user: PartialUser;
-		/**
-		 * IDs for installation context(s) related to an interaction
-		 *
-		 * Irrelevant.
-		 */
-		authorizing_integration_owners: unknown;
-		/** ID of the original response message, present only on follow-up messages */
-		original_response_message_id?: string;
-	};
+	interaction_metadata?: MessageInteractionMetadata;
 	/** Sent if a thread was started from this message */
 	thread?: Channel;
 	/** Sent if the message contains components like buttons, action rows, or other interactive components */
@@ -404,11 +519,18 @@ type MessageBase = {
 	/** Sent if the message contains stickers */
 	sticker_items?: StickerItem[];
 	/**
+	 * The stickers sent with the message
+	 * @deprecated
+	 */
+	stickers?: Sticker[];
+	/**
 	 * A generally increasing integer (there may be gaps or duplicates) that represents the approximate position of the message in a thread
 	 *
 	 * It can be used to estimate the relative position of the message in a thread in company with `total_message_sent` on parent thread.
 	 */
 	position?: number;
+	/** Data of the role subscription purchase or renewal that prompted this `ROLE_SUBSCRIPTION_PURCHASE` message */
+	role_subscription_data?: unknown;
 	/**
 	 * Data for users, members, channels, and roles in the message's auto-populated select menus
 	 *
@@ -430,28 +552,9 @@ type MessageBase = {
 		/** Time when call ended */
 		ended_timestamp: string;
 	};
+	/** Sent with activity invitations */
+	activity_instance?: unknown;
 };
-
-export type WebhookAuthor = {
-	/** The webhook's ID */
-	id: string;
-	/** The webhook's username */
-	username: string;
-	/** The webhook's avatar */
-	avatar?: string | null;
-};
-
-export type NonWebhookMessage = MessageBase & {
-	/** The author of this message */
-	author: PartialUser;
-	webhook_id?: undefined;
-};
-export type WebhookMessage = MessageBase & {
-	author: WebhookAuthor;
-	webhook_id: string;
-};
-
-export type Message = NonWebhookMessage | WebhookMessage;
 
 //#endregion
 
@@ -639,13 +742,14 @@ export type ThreadMetadata = {
 	create_timestamp?: string;
 };
 
-export type ForumThreadTag = {
+export type ForumTag = {
 	/** The ID of the tag */
 	id: string;
 	/** The name of the tag (0-20 characters) */
 	name: string;
 	/** Whether this tag can only be added to or removed from threads by a member with the manage threads permission */
 	moderated: boolean;
+	color?: unknown;
 } & OptionalEmojiFields;
 
 export type DefaultReaction = EmojiFields;
@@ -691,6 +795,10 @@ type TextChannelFields = {
 	 * Can be set to: 60, 1440, 4320, 10080.
 	 */
 	default_auto_archive_duration?: number;
+	/**
+	 * Only included when part of the resolved data received on a slash command interaction.
+	*/
+	permissions?: string;
 	default_thread_rate_limit_per_user?: number;
 };
 
@@ -714,6 +822,19 @@ type GroupDMChannelFields = {
 type GuildChannelFields = {
 	/** The name of the channel (1-100 characters) */
 	name: string;
+	/** ID of the parent category for a channel */
+	parent_id?: string | null;
+	/** Explicit permission overwrites for members and roles */
+	permission_overwrites?: PermissionOverwrite[];
+	/** Sorting position of the channel */
+	position: number;
+	/** The emoji to show next to the channel name in channels list */
+	icon_emoji?: PartialEmoji;
+	/** The background color of the channel icon emoji encoded as an integer representation of a hexadecimal color code */
+	theme_color?: number | null;
+};
+
+type GuildIDChannelFields = {
 	/**
 	 * The ID of the guild
 	 *
@@ -721,12 +842,6 @@ type GuildChannelFields = {
 	 * type definitions assume any channel with `guild_id` set is a guild channel.
 	 */
 	guild_id: string;
-	/** ID of the parent category for a channel */
-	parent_id?: string | null;
-	/** Explicit permission overwrites for members and roles */
-	permission_overwrites?: PermissionOverwrite[];
-	/** Sorting position of the channel */
-	position: number;
 };
 
 type VoiceChannelFields = {
@@ -745,6 +860,15 @@ type VoiceChannelFields = {
 	rtc_region?: string | null;
 	/** The camera video quality mode of the voice or stage channel, `1` when not present */
 	video_quality_mode?: number;
+	/** The status of the voice channel (max 500 characters) */
+	status?: string | null;
+	/** When the HD streaming entitlement expires for the voice channel */
+	hd_streaming_until?: string | null;
+	/** The ID of the user who applied the HD streaming entitlement to the voice channel */
+	hd_streaming_buyer_id?: string | null;
+	/** The lobby linked to the channel */
+	linked_lobby?: unknown;
+	voice_background_display?: unknown;
 };
 
 type ThreadChannelFields = {
@@ -796,7 +920,7 @@ type ForumChannelFields = {
 	 */
 	last_message_id: string | null;
 	/** The set of tags that can be used in a guild forum or a guild media channel */
-	available_tags: ForumThreadTag[];
+	available_tags: ForumTag[];
 	/**
 	 * The emoji to show in the add reaction button on a thread in a guild forum or a guild media
 	 * channel
@@ -804,6 +928,14 @@ type ForumChannelFields = {
 	default_reaction_emoji?: DefaultReaction | null;
 	default_sort_order?: number | null;
 	default_forum_layout?: number;
+	/**
+	 * The default tag matching behavior
+	 *
+	 * Known possible values: `"match_some"`, `"match_all"`.
+	 */
+	default_tag_setting?: string;
+	/** Probably the default content for new posts */
+	template?: string;
 };
 
 export type GuildTextChannel = ChannelCommonFields<ChannelType.GuildText> & GuildChannelFields & TextChannelFields;
@@ -842,6 +974,11 @@ export type Channel =
 	DirectChannel |
 	GuildChannel |
 	Thread;
+
+export type ChannelWithGuildID =
+	DirectChannel |
+	(GuildChannel & GuildIDChannelFields) |
+	(Thread & GuildIDChannelFields);
 
 export type ThreadMember = {
 	/** Thread ID */
@@ -942,7 +1079,15 @@ export const Permission = {
 export type Role = {
 	id: string;
 	name: string;
+	/**
+	 * The description for the role (max 90 characters)
+	 *
+	 * Experimental.
+	 */
+	description?: string;
+	/** @deprecated */
 	color: number;
+	colors: unknown;
 	/** Whether this role is pinned in the user listing */
 	hoist: boolean;
 	/** Icon hash */
@@ -987,7 +1132,11 @@ export type Guild = {
 	splash: string | null;
 	/** Discovery splash image hash */
 	discovery_splash: string | null;
+	owner?: boolean;
 	owner_id: string;
+	permissions?: string;
+	/** @deprecated */
+	region?: string | null;
 	afk_channel_id: string | null;
 	afk_timeout: number;
 	widget_enabled?: boolean;
@@ -1021,14 +1170,26 @@ export type Guild = {
 	public_updates_channel_id: string | null;
 	max_video_channel_users?: number;
 	max_stage_video_channel_users?: number;
+	approximate_member_count?: number;
+	approximate_presence_count?: number;
 	welcome_screen?: unknown;
+	/** @deprecated */
+	nsfw?: boolean;
 	nsfw_level: number;
-	stickers?: Sticker;
+	stickers?: Sticker[];
 	premium_progress_bar_enabled: boolean;
 	safety_alerts_channel_id: string | null;
+	incidents_data: unknown;
+	profile: {
+		/** The tag of the guild (2-4 characters) */
+		tag: string;
+		/** The guild badge hash */
+		badge: string;
+	} | null;
 };
 
 export const enum MemberFlag {
+	None = 0,
 	DidRejoin = 1 << 0,
 	CompletedOnboarding = 1 << 1,
 	BypassesVerification = 1 << 2,
@@ -1040,6 +1201,8 @@ export type GuildMember = {
 	nick?: string | null;
 	/** Avatar hash */
 	avatar?: string | null;
+	/** The member's guild banner hash */
+	banner?: string | null;
 	/** Role IDs */
 	roles: string[];
 	joined_at: string;
@@ -1055,8 +1218,11 @@ export type GuildMember = {
 	 * again, `null` or a time in the past if the user is not timed out
 	 */
 	communication_disabled_until?: string | null;
+	unusual_dm_activity_until?: string | null;
 	avatar_decoration_data?: AvatarDecorationData | null;
 };
+
+export type PartialUserWithMemberField = PartialUser & { member: GuildMember };
 
 //#endregion
 
@@ -1380,7 +1546,7 @@ export type GatewayReadyDispatchPayloadBot = GatewayGenericDispatchPayload<"READ
 		flags: number;
 	};
 }>;
-export type GatewayChannelDispatchChannel = GuildChannel | DirectChannel;
+export type GatewayChannelDispatchChannel = (GuildChannel & GuildIDChannelFields) | DirectChannel;
 export type GatewayChannelCreateDispatchPayload = GatewayGenericDispatchPayload<"CHANNEL_CREATE", GatewayChannelDispatchChannel>;
 export type GatewayChannelUpdateDispatchPayload = GatewayGenericDispatchPayload<"CHANNEL_UPDATE", GatewayChannelDispatchChannel>;
 export type GatewayChannelDeleteDispatchPayload = GatewayGenericDispatchPayload<"CHANNEL_DELETE", GatewayChannelDispatchChannel>;
@@ -1402,6 +1568,21 @@ export type GatewayGuildCreateDispatchPayload = GatewayGenericDispatchPayload<"G
 	presences: unknown[];
 	stage_instances: unknown[];
 	guild_scheduled_events: unknown[];
+	soundboard_sounds: unknown[];
+
+	// Undocumented fields
+	moderator_reporting: unknown;
+	activity_instances: unknown;
+	hub_type: unknown;
+	latest_onboarding_question_id: unknown;
+	premium_features: unknown;
+	owner_configured_content_level: unknown;
+	embedded_activities: unknown;
+	lazy: unknown;
+	application_command_counts: unknown;
+	home_header: unknown;
+	version: unknown;
+	inventory_settings: unknown;
 }>;
 export type GatewayGuildUpdateDispatchPayload = GatewayGenericDispatchPayload<"GUILD_UPDATE", Guild>;
 export type GatewayGuildDeleteDispatchPayload = GatewayGenericDispatchPayload<"GUILD_DELETE", UnavailableGuild>;
@@ -1441,10 +1622,13 @@ export type GatewayGuildRoleDeleteDispatchPayload = GatewayGenericDispatchPayloa
 	role_id: string;
 }>;
 export type GatewayMessageCreateDispatchPayload = GatewayGenericDispatchPayload<"MESSAGE_CREATE", Message & {
+	channel_type: number;
 	guild_id?: string;
 	member?: GuildMember;
 	// The docs say that the user objects have a partial member field
-	mentions: PartialUser[];
+	mentions: PartialUserWithMemberField[];
+	/** Custom metadata for the message (max 25 keys, 1024 characters per key and value) */
+	metadata?: object;
 }>;
 export type GatewayMessageUpdateDispatchPayload = GatewayGenericDispatchPayload<"MESSAGE_UPDATE", GatewayMessageCreateDispatchPayload["d"]>;
 export type GatewayMessageDeleteDispatchPayload = GatewayGenericDispatchPayload<"MESSAGE_DELETE", {

@@ -1,5 +1,7 @@
 import * as DT from "../discord-api/types.js";
 
+export type CustomEmojiData = Omit<DT.CustomEmoji, "available">;
+
 export type Timing = {
 	timestamp: number;
 	realtime: boolean;
@@ -20,6 +22,7 @@ export const enum RequestType {
 	Close,
 	BeginTransaction,
 	CommitTransaction,
+	RollbackTransaction,
 	Optimize,
 	Vacuum,
 	AddUserSnapshot,
@@ -30,10 +33,15 @@ export const enum RequestType {
 	AddMemberLeave,
 	AddRoleSnapshot,
 	MarkRoleAsDeleted,
+	GetRoles,
 	AddChannelSnapshot,
 	MarkChannelAsDeleted,
+	GetChannels,
+	GetThreads,
+	GetForumTags,
 	AddMessageSnapshot,
 	MarkMessageAsDeleted,
+	GetMessages,
 	AddInitialReactions,
 	AddReactionPlacement,
 	MarkReactionAsRemoved,
@@ -42,23 +50,26 @@ export const enum RequestType {
 	MarkGuildEmojiAsDeleted,
 	UpdateEmojiUploaders,
 	CheckForMissingEmojiUploaders,
+	GetGuildEmojis,
 	GetFile,
 	GetFiles,
 	GetFileHashUtilization,
 	AddFile,
 	GetLastMessageID,
 	GetGuilds,
-	GetDMChannels,
-	GetGuildChannels,
-	GetChannelMessages,
-	CountChannelMessages,
 	SearchMessages,
 }
 
-// `timing === null` indicates that the snapshot depicts the state of the object upon creation.
+// In add snapshot requests, `timing === null` indicates that the snapshot depicts the state of the object upon creation.
 
 export type CommandRequest = {
-	type: RequestType.Close | RequestType.BeginTransaction | RequestType.CommitTransaction | RequestType.Optimize | RequestType.Vacuum;
+	type:
+		RequestType.Close |
+		RequestType.BeginTransaction |
+		RequestType.CommitTransaction |
+		RequestType.RollbackTransaction |
+		RequestType.Optimize |
+		RequestType.Vacuum;
 };
 export type AddUserSnapshotRequest = {
 	type: RequestType.AddUserSnapshot;
@@ -88,6 +99,11 @@ export type MarkRoleAsDeletedRequest = {
 	type: RequestType.MarkRoleAsDeleted;
 	timing: Timing;
 	id: string;
+};
+export type GetRolesRequest = {
+	type: RequestType.GetRoles;
+	timestamp?: number | null | undefined;
+	guildID: string;
 };
 export type SyncGuildMembersRequest = {
 	type: RequestType.SyncGuildMembers;
@@ -127,14 +143,36 @@ export type MarkChannelAsDeletedRequest = {
 	timing: Timing;
 	id: string;
 };
+export type GetChannelsRequest = {
+	type: RequestType.GetChannels;
+	timestamp?: number | null | undefined;
+	guildID?: string | null | undefined;
+};
+export type GetThreadsRequest = {
+	type: RequestType.GetThreads;
+	timestamp?: number | null | undefined;
+	parentID: string;
+};
+export type GetForumTagsRequest = {
+	type: RequestType.GetForumTags;
+	timestamp?: number | null | undefined;
+	channelID: string;
+};
 export type AddMessageSnapshotRequest = {
 	type: RequestType.AddMessageSnapshot;
+	/** Used for the timing of the users' (e.g. author) snapshots. */
+	timestamp: number;
 	message: DT.Message;
 };
 export type MarkMessageAsDeletedRequest = {
 	type: RequestType.MarkMessageAsDeleted;
 	timing: Timing;
 	id: string;
+};
+export type GetMessagesRequest = {
+	type: RequestType.GetMessages;
+	timestamp?: number | null | undefined;
+	channelID: string;
 };
 export type AddInitialReactionsRequest = {
 	type: RequestType.AddInitialReactions;
@@ -168,7 +206,7 @@ export type MarkReactionAsRemovedBulkRequest = {
 export type AddGuildEmojiSnapshotRequest = {
 	type: RequestType.AddGuildEmojiSnapshot;
 	timing: Timing | null;
-	emoji: DT.CustomEmoji;
+	emoji: CustomEmojiData;
 	guildID: string;
 };
 export type MarkGuildEmojiAsDeletedRequest = {
@@ -185,6 +223,11 @@ export type UpdateEmojiUploadersRequest = {
 };
 export type CheckForMissingEmojiUploadersRequest = {
 	type: RequestType.CheckForMissingEmojiUploaders;
+	guildID: string;
+};
+export type GetGuildEmojisRequest = {
+	type: RequestType.GetGuildEmojis;
+	timestamp?: number | null | undefined;
 	guildID: string;
 };
 export type GetFileRequest = {
@@ -218,21 +261,6 @@ export type GetLastMessageIDRequest = {
 export type GetGuildsRequest = {
 	type: RequestType.GetGuilds;
 };
-export type GetDMChannelsRequest = {
-	type: RequestType.GetDMChannels;
-};
-export type GetGuildChannelsRequest = {
-	type: RequestType.GetGuildChannels;
-	guildID: string;
-};
-export type GetChannelMessagesRequest = {
-	type: RequestType.GetChannelMessages;
-	channelID: string;
-};
-export type CountChannelMessagesRequest = {
-	type: RequestType.CountChannelMessages;
-	channelID: string;
-};
 export type SearchMessagesRequest = {
 	type: RequestType.SearchMessages;
 	query: string;
@@ -263,17 +291,20 @@ export type SingleRequest =
 	MarkGuildEmojiAsDeletedRequest |
 	UpdateEmojiUploadersRequest |
 	CheckForMissingEmojiUploadersRequest |
+	GetGuildEmojisRequest |
 	GetFileRequest |
 	GetFileHashUtilizationRequest |
 	AddFileRequest |
-	GetLastMessageIDRequest |
-	CountChannelMessagesRequest;
+	GetLastMessageIDRequest;
 export type IteratorRequest =
-	GetFilesRequest |
 	GetGuildsRequest |
-	GetDMChannelsRequest |
-	GetGuildChannelsRequest |
-	GetChannelMessagesRequest |
+	GetRolesRequest |
+	GetChannelsRequest |
+	GetThreadsRequest |
+	GetForumTagsRequest |
+	GetMessagesRequest |
+	GetGuildEmojisRequest |
+	GetFilesRequest |
 	SearchMessagesRequest;
 
 export type File = {
@@ -282,7 +313,7 @@ export type File = {
 	errorCode: number | null;
 };
 
-export type ResponseFor<R extends SingleRequest> =
+export type SingleResponseFor<R extends SingleRequest> =
 	R extends CommandRequest ? void :
 	R extends AddUserSnapshotRequest ? AddSnapshotResult :
 	R extends SyncDeletedGuildSubObjectsRequest ? void :
@@ -309,28 +340,31 @@ export type ResponseFor<R extends SingleRequest> =
 	R extends GetFileHashUtilizationRequest ? boolean :
 	R extends AddFileRequest ? boolean :
 	R extends GetLastMessageIDRequest ? bigint | null :
-	R extends CountChannelMessagesRequest ? bigint | null :
 	never;
 
-export type DeletableLatestSnapshotTimings = {
+export type SnapshotResponse<T> = {
+	/**
+	 * The timing at which the snapshot was taken, or `null` if the snapshot depicts the state of
+	 * the object upon creation.
+	 *
+	 * For messages, the `timestamp` property corresponds to `edited_timestamp` and the `realtime`
+	 * property is always set to `true`.
+	 */
 	timing: Timing | null;
+	/** The timing at which the object was deleted or found to be deleted. */
 	deletedTiming: Timing | null;
+	data: T;
 };
 
 export type IteratorResponseFor<R extends IteratorRequest> =
 	R extends GetFilesRequest ? File :
-	R extends GetGuildsRequest ? DeletableLatestSnapshotTimings & {
-		guild: DT.Guild;
-	} :
-	R extends GetDMChannelsRequest ? DeletableLatestSnapshotTimings & {
-		channel: DT.GuildChannel;
-	} :
-	R extends GetGuildChannelsRequest ? DeletableLatestSnapshotTimings & {
-		channel: DT.GuildChannel;
-	} :
-	R extends GetChannelMessagesRequest ? DeletableLatestSnapshotTimings & {
-		message: DT.Message;
-	} :
+	R extends GetGuildsRequest ? SnapshotResponse<DT.Guild> :
+	R extends GetRolesRequest ? SnapshotResponse<DT.Role> :
+	R extends GetChannelsRequest ? SnapshotResponse<Omit<DT.GuildChannel, "available_tags">> :
+	R extends GetThreadsRequest ? SnapshotResponse<DT.Thread> :
+	R extends GetForumTagsRequest ? SnapshotResponse<DT.ForumTag> :
+	R extends GetMessagesRequest ? SnapshotResponse<DT.Message> :
+	R extends GetGuildEmojisRequest ? SnapshotResponse<CustomEmojiData> :
 	R extends SearchMessagesRequest ? {
 		_timestamp: bigint;
 		_deleted: bigint | null;

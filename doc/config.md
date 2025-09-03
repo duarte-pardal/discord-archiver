@@ -88,7 +88,7 @@ Options control what information about each object (server, channel, etc.) is ar
 
 ### Object hierarchy
 
-Each thread is a sub&hyphen;object of its parent channel. Each guild channel is a sub&hyphen;object of its guild. A sub&hyphen;object inherits all options from the parent object, except for those which are overridden.
+Each thread is a sub&hyphen;object of its parent channel. Each guild channel is a sub&hyphen;object of its guild. A sub&hyphen;object inherits all options from the parent object, except those which are overridden.
 
 
 ### Default options
@@ -231,7 +231,7 @@ Controls whether to request information about the users who uploaded each emoji,
 Each entry in `mediaConfig` may contain the following properties:
 
 - `format` (string): one of `"png"`, `"jpeg"`, `"webp"` or `"gif"`. `"gif"` might not be available for images from certain sources (this is a Discord limitation).
-- `queryParams` (string): the parameters to use when requesting the image. Check the [official documentation](https://docs.discord.sex/reference#cdn-parameters) for a list of all officially supported parameters and values or the [unofficial documentation](https://docs.discord.sex/reference#cdn-parameters) for a list of all known parameters and values.
+- `queryParams` (string): the parameters to use when requesting the image. Check the [official documentation](https://discord.com/developers/docs/reference#cdn-parameters) for a list of all officially supported parameters and values or the [unofficial documentation](https://docs.discord.food/reference#cdn-parameters) for a list of all known parameters and values.
 
 ### Format selection
 

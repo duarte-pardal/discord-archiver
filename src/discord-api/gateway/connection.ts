@@ -31,7 +31,7 @@ export class GatewayCloseError extends Error {
 	reason: Buffer | undefined;
 
 	constructor(code: number, reason?: Buffer) {
-		super(`WS connection closed with code ${code} (${reason ? reason.toString("utf-8") : "no reason given"}).`);
+		super(`WebSocket connection closed with code ${code} (${reason ? reason.toString("utf-8") : "no reason given"}).`);
 		this.code = code;
 		this.reason = reason;
 	}
@@ -123,6 +123,8 @@ export class GatewayConnection<GT extends GatewayTypes = GatewayTypes> extends E
 	}
 
 	async #connect() {
+		if (this.#state === ConnectionState.Destroyed) return;
+
 		this.emit("connecting");
 		this.#state = ConnectionState.Connecting;
 		this.#wasHeartbeatAcknowledged = true;
@@ -177,8 +179,7 @@ export class GatewayConnection<GT extends GatewayTypes = GatewayTypes> extends E
 	#onClose(code: number, reason?: Buffer) {
 		if (code < 4000 || (code >= 4000 && code < 4010 && code !== 4004)) {
 			this.#stopHeartbeating();
-			if (this.#ws !== undefined) {
-				// Reconnect if the destroy() method wasn't called
+			if (this.#ws !== undefined && this.#state !== ConnectionState.Destroyed) {
 				this.emit("connectionLost", this.#state !== ConnectionState.Connecting, code, reason?.toString("utf-8"));
 				setTimeout(() => {
 					this.#connect();
@@ -253,13 +254,14 @@ export class GatewayConnection<GT extends GatewayTypes = GatewayTypes> extends E
 	async #sendPayload(payload: DT.GatewaySendPayload) {
 		await this.#sendPayloadRateLimiter!.whenFree();
 		if (this.#state === ConnectionState.Destroyed) return;
-		// TODO: We need a queue because we can get disconnected while waiting for the rate limiter.
+		// BUG: We need a queue because we can get disconnected while waiting for the rate limiter.
 		this.emit("payloadSent", payload);
 		this.#ws!.send(this.#encodePayload!(payload));
 	}
 	async sendPayload(payload: DT.GatewaySendPayload): Promise<void> {
-		if (this.#state !== ConnectionState.Ready) throw new Error("The connection isn't ready yet");
-		if (this.#ws === undefined) throw new Error("There is currently no connection");
+		if (this.#state !== ConnectionState.Ready || this.#ws === undefined) {
+			return;
+		}
 		this.#sendPayload(payload);
 	}
 

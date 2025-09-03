@@ -15,6 +15,7 @@ export const enum LoggingLevel {
 	Verbose = 3,
 	Debug = 4,
 }
+export type LevelName = "error" | "warning" | "info" | "verbose" | "debug";
 
 function levelToNumber(level: string | number): LoggingLevel {
 	let levelNumber;

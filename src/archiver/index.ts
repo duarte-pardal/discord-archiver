@@ -9,7 +9,7 @@ import * as DT from "../discord-api/types.js";
 import { AddSnapshotResult, getDatabaseConnection, RequestType } from "../db/index.js";
 import { GatewayConnection } from "../discord-api/gateway/connection.js";
 import { apiReq, RequestResult } from "../discord-api/rest.js";
-import { computeChannelPermissions, computeGuildPermissions, hasChannelPermissions } from "./permissions.js";
+import { computeChannelPermissions, computeGuildPermissions } from "./permissions.js";
 import { areMapsEqual } from "../util/map-equality.js";
 import { abortError, waitForAbort } from "../util/abort.js";
 import { parseArgs, ParseArgsConfig } from "node:util";
@@ -21,7 +21,6 @@ import { Account, AccountOptions, accounts, getLeastGatewayOccupiedAccount, getL
 import { ArchivedThreadSyncProgress, downloadProgresses, MessageSyncProgress, progressCounts, startProgressDisplay, stopProgressDisplay, updateProgressOutput } from "./progress.js";
 import { DownloadArguments, getCDNEmojiURL, getCDNHashURL, getDownloadTransactionFunction, normalizeURL } from "./files.js";
 import { mergeOptions } from "../util/http.js";
-import { mapIterator } from "../util/iterators.js";
 import { setMaxListeners } from "node:events";
 import { FileStore } from "../db/file-store.js";
 import { getGuildOptions, isFileStoreNeeded, MessageOptions, parseConfig, ParsedConfig } from "./config.js";
@@ -111,7 +110,11 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 	try {
 		config = await parseConfig(json5Config);
 	} catch (err) {
-		console.error(`Configuration error: ${(err as ZodError).errors[0].path.join(".")}: ${(err as ZodError).errors[0].message}`);
+		if (!(err instanceof ZodError)) {
+			throw err;
+		}
+
+		console.error(`Configuration error at ${err.errors[0].path.join(".")}: ${err.errors[0].message}`);
 		return;
 	}
 	log.debug?.("Parsed config: %o", config);
@@ -142,6 +145,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 
 	// ARCHIVING
 
+	// BUG: This doesn't extract the files of forwarded messages.
 	function extractMessageFiles(message: DT.Message, options: MessageOptions): DownloadArguments[] {
 		const emojis = extractEmojis(message.content);
 
@@ -190,6 +194,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 		account: Account,
 		message: DT.Message,
 		cachedChannel: CachedTextLikeChannel | CachedThread,
+		timestamp: number,
 		abortSignal: AbortSignal,
 		includeReactions: boolean,
 		files = extractMessageFiles(message, cachedChannel.options),
@@ -256,6 +261,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 		await doDownloadTransaction(abortSignal, files, async () => {
 			messageAddPromise = db.request({
 				type: RequestType.AddMessageSnapshot,
+				timestamp,
 				message: message,
 			});
 			for (const reactionData of reactions) {
@@ -265,7 +271,6 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 					emoji: reactionData.emoji,
 					reactionType: reactionData.reactionType,
 					userIDs: reactionData.userIDs,
-					timing: null,
 				});
 			}
 		});
@@ -346,6 +351,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 					break;
 				}
 
+				const timestamp = Date.now();
 				const messages = data!;
 
 				if (messages.length > 0) {
@@ -372,6 +378,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 							for (let j = startIndex; j > endIndex; j--) {
 								lastMessageAddPromise = db.request({
 									type: RequestType.AddMessageSnapshot,
+									timestamp,
 									message: messages[j],
 								});
 							}
@@ -391,7 +398,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 							simpleMessagesStartIndex = i - 1;
 
 							try {
-								await archiveMessageSnapshot(account, message, channel, abortController.signal, true, files);
+								await archiveMessageSnapshot(account, message, channel, timestamp, abortController.signal, true, files);
 							} catch (err) {
 								if (err === abortError) throw err;
 								log.warning?.(`Stopped syncing messages from #${channel.name} (${channel.id}) using ${account.name} because we got a ${response.status} ${response.statusText} response.`);
@@ -427,6 +434,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 			if (err === abortError) {
 				log.verbose?.(`Stopped syncing messages from #${channel.name} (${channel.id}) using ${account.name}.`);
 			} else {
+				log.error?.("Unexpected error while syncing messages.");
 				throw err;
 			}
 		} finally {
@@ -534,8 +542,10 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 				if (err === abortError) {
 					log.verbose?.(`Stopped enumerating ${ArchivedThreadListType[type]} archived threads from #${channel.name} (${channel.id}) using ${account.name}.`);
 					break;
+				} else {
+					log.error?.("Unexpected error while syncing archived threads.");
+					throw err;
 				}
-				throw err;
 			}
 		}
 
@@ -567,6 +577,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 				log.warning?.(`Got ${response.status} ${response.statusText} response while requesting the uploaders of emojis from ${cachedGuild.name} (${cachedGuild.id}) using ${account.name}.`);
 				return;
 			}
+			const timestamp = Date.now();
 			const emojisWithUploader = data!.filter((e => e.user != null) as (e: DT.CustomEmoji) => e is (DT.CustomEmoji & { user: DT.PartialUser }));
 			db.transaction(async () => {
 				const userIDs = new Set();
@@ -577,7 +588,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 							type: RequestType.AddUserSnapshot,
 							user: emoji.user,
 							timing: {
-								timestamp: Date.now(),
+								timestamp,
 								realtime: false,
 							},
 						});
@@ -591,6 +602,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 			});
 		} catch (err) {
 			if (err !== abortError) {
+				log.error?.("Unexpected error while requesting expression uploaders.");
 				throw err;
 			}
 		} finally {
@@ -603,24 +615,25 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 
 	// GATEWAY
 
-	// BUG: Permissions aren't properly updated when role permissions change
-	function updateGuildPermissions(cachedGuild: CachedGuild) {
-		for (const cachedChannel of cachedGuild.channels.values()) {
-			if (cachedChannel.textLike) {
-				updateGuildChannelPermissions(cachedChannel);
-			}
-		}
-		for (const [account, accountData] of cachedGuild.accountData) {
+	function updateGuildPermissions(guild: CachedGuild) {
+		for (const [account, accountData] of guild.accountData) {
+			accountData.guildPermissions = computeGuildPermissions(account, guild, accountData.roles);
+
 			const expressionPermissions = account.bot ?
 				DT.Permission.ManageGuildExpressions :
 				(DT.Permission.CreateGuildExpressions | DT.Permission.ManageGuildExpressions);
 			const hasEmojiPermission = (accountData.guildPermissions & expressionPermissions) != 0n;
 			if (hasEmojiPermission) {
-				cachedGuild.accountsWithExpressionPermission.add(account);
-				account.references.add(cachedGuild.accountsWithExpressionPermission);
-			} else if (cachedGuild.accountsWithExpressionPermission.has(account)) {
-				cachedGuild.accountsWithExpressionPermission.delete(account);
-				account.references.delete(cachedGuild.accountsWithExpressionPermission);
+				guild.accountsWithExpressionPermission.add(account);
+				account.references.add(guild.accountsWithExpressionPermission);
+			} else if (guild.accountsWithExpressionPermission.has(account)) {
+				guild.accountsWithExpressionPermission.delete(account);
+				account.references.delete(guild.accountsWithExpressionPermission);
+			}
+		}
+		for (const cachedChannel of guild.channels.values()) {
+			if (cachedChannel.textLike) {
+				updateGuildChannelPermissions(cachedChannel);
 			}
 		}
 	}
@@ -637,8 +650,17 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 
 		for (const [account, accountData] of cachedChannel.guild!.accountData.entries()) {
 			const permissions = computeChannelPermissions(account, cachedChannel.guild!, cachedChannel, accountData);
-			const hasReadPermission = hasChannelPermissions(permissions, DT.Permission.ReadMessageHistory);
-			const hasManageThreadsPermission = hasReadPermission && hasChannelPermissions(permissions, DT.Permission.ManageThreads);
+			const implicitlyDenied =
+				(permissions & DT.Permission.ViewChannel) === 0n ||
+				(
+					(
+						cachedChannel.type === DT.ChannelType.GuildVoice ||
+						cachedChannel.type === DT.ChannelType.GuildStageVoice
+					) &&
+					(permissions & DT.Permission.Connect) === 0n
+				);
+			const hasReadPermission = !implicitlyDenied && (permissions & DT.Permission.ReadMessageHistory) !== 0n;
+			const hasManageThreadsPermission = !implicitlyDenied && (permissions & DT.Permission.ManageThreads) !== 0n;
 
 			if (hasReadPermission) {
 				cachedChannel.accountsWithReadPermission.add(account);
@@ -676,6 +698,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 				const newAccount = getLeastRESTOccupiedAccount(cachedChannel.accountsWithManageThreadsPermission);
 				if (newAccount) {
 					// TODO: Switch thread enumeration to the other account
+					log.error?.("The archiver was supposed to switch a thread enumeration process to another account due to losing permissions but this is currently unimplemented. Restart the archiver.");
 				}
 				for (const sync of account.ongoingPrivateThreadMessageSyncs.get(cachedChannel)?.values() ?? []) {
 					sync.abortController.abort();
@@ -964,6 +987,10 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 									missingEmojiUploaders: undefined,
 									initialSyncPromise: initialSyncPromise.then(() => undefined),
 								};
+								// Prevent this promise from causing an unhandled rejection while
+								// propagating the error to awaiting consumers. Any error in this promise
+								// will also be encountered by the `await` expression below.
+								cachedGuild.initialSyncPromise.catch(() => {});
 								cachedGuild.channels = new Map(
 									payload.d.channels.map(c => [c.id, createCachedChannel(c, config, cachedGuild)]),
 								);
@@ -975,7 +1002,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 
 								cachedGuild.accountData.set(account, {
 									roles: new Set(ownMember.roles),
-									guildPermissions: computeGuildPermissions(account, cachedGuild, ownMember.roles),
+									guildPermissions: 0n, // will be computed below
 								});
 								updateGuildPermissions(cachedGuild);
 
@@ -1196,7 +1223,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 								}
 							}
 
-							// It seems that the API always returns a full member, but it's better to check.
+							// It seems like the API always returns a full member, but it's better to check.
 							// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
 							if (member.joined_at == null) {
 								log.warning?.("`joined_at` is missing on a guild member update event. This snapshot won't be recorded.");
@@ -1376,7 +1403,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 								// receive a MESSAGE_CREATE event after the GUILD_CREATE or READY
 								// event but before the guild's data is in the database.
 								await cachedChannel.guild?.initialSyncPromise;
-								await archiveMessageSnapshot(account, payload.d, cachedChannel as CachedTextLikeChannel, abortController.signal, false);
+								await archiveMessageSnapshot(account, payload.d, cachedChannel as CachedTextLikeChannel, timestamp, abortController.signal, false);
 							}
 							break;
 						}
@@ -1493,12 +1520,15 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 				});
 			}
 
-			// TODO: Handle gateway errors
 			gatewayConnection.on("error", (err) => {
 				if (!ready) {
 					rej(err);
 				} else {
-					throw err;
+					log.error?.(`Got an error on ${account.name}’s gateway connection. This account will be disconnected. ${err}`);
+					account.disconnect();
+					if (accounts.size === 0) {
+						stop();
+					}
 				}
 			});
 
@@ -1521,8 +1551,12 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 				if (!accounts.has(account))
 					throw new Error("The account was already disconnected");
 
-				account.gatewayConnection.destroy();
 				accounts.delete(account);
+				for (const reference of account.references) {
+					reference.delete(account);
+				}
+
+				account.gatewayConnection.destroy();
 
 				const endPromises = [];
 				for (const set of account.ongoingMessageSyncs.values()) {
@@ -1608,7 +1642,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 		log.info?.("Exiting. (Press Ctrl+C again to terminate abruptly.)");
 		globalAbortController.abort();
 		log.verbose?.("Disconnecting all accounts.");
-		await Promise.all(mapIterator(accounts.values(), account => account.disconnect()));
+		await Promise.all(accounts.values().map(account => account.disconnect()));
 		if (fileStore !== undefined) {
 			log.verbose?.("Closing the file store.");
 			await fileStore.close();
@@ -1625,36 +1659,37 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 	process.once("SIGTERM", stop);
 
 	// Connect to all accounts
-	try {
-		await Promise.all(config.accounts.map((accountConfig, index) => connectAccount({
-			name: accountConfig.name ?? `account #${index}`,
-			mode: "bot",
+	await Promise.all(config.accounts.map((accountConfig, index) => connectAccount({
+		name: accountConfig.name ?? `account #${index}`,
+		mode: "bot",
+		token: accountConfig.token,
+		gatewayIdentifyData: Object.assign({
+			intents:
+				DT.GatewayIntent.Guilds |
+				DT.GatewayIntent.GuildMessages |
+				DT.GatewayIntent.GuildMessageReactions |
+				DT.GatewayIntent.DirectMessages |
+				DT.GatewayIntent.DirectMessageReactions |
+				DT.GatewayIntent.GuildMembers |
+				DT.GatewayIntent.GuildEmojisAndStickers,
+			properties: {
+				os: process.platform,
+				browser: "DiscordArchiver/0.0.0",
+				device: "DiscordArchiver/0.0.0",
+			},
 			token: accountConfig.token,
-			gatewayIdentifyData: Object.assign({
-				intents:
-					DT.GatewayIntent.Guilds |
-					DT.GatewayIntent.GuildMessages |
-					DT.GatewayIntent.GuildMessageReactions |
-					DT.GatewayIntent.DirectMessages |
-					DT.GatewayIntent.DirectMessageReactions |
-					DT.GatewayIntent.GuildMembers |
-					DT.GatewayIntent.GuildEmojisAndStickers,
-				properties: {
-					os: process.platform,
-					browser: "DiscordArchiver/0.0.0",
-					device: "DiscordArchiver/0.0.0",
-				},
-				token: accountConfig.token,
-			}, accountConfig.gatewayIdentifyData),
-			restHeaders: {},
-		})));
-	} catch (err) {
+		}, accountConfig.gatewayIdentifyData),
+		restHeaders: {},
+	}).catch((err: unknown) => {
+		const accountName = accountConfig.name ?? `account #${index}`;
 		if (err === abortError) {
-			return;
+			log.verbose?.(`Connection of ${accountName} was aborted.`);
 		} else {
-			throw err;
+			log.error?.(`Couldn't connect ${accountName}. ${(err as Error)}`);
 		}
-	}
+	})));
+
+	if (accounts.size === 0) return;
 
 	allReady = true;
 	log.info?.("All accounts are ready.");
@@ -1662,7 +1697,16 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 	for (const guild of guilds.values()) {
 		if (!guild.options.archive) continue;
 		(async () => {
-			await guild.initialSyncPromise;
+			try {
+				await guild.initialSyncPromise;
+			} catch (err) {
+				if (err !== abortError) {
+					log.error?.("Unexpected error while awaiting the guild's initial sync promise after all accounts were ready.");
+					throw err;
+				} else {
+					return;
+				}
+			}
 
 			syncAllGuildMembers(getLeastGatewayOccupiedAccount(guild.accountData.keys())!, guild);
 			if (guild.missingEmojiUploaders && guild.accountsWithExpressionPermission.size > 0) {

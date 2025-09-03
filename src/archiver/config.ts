@@ -152,11 +152,6 @@ const Config = z.object({
 	accounts: z.array(AccountConfig).nonempty(),
 	options: z.optional(PartialGuildOptions),
 	overrides: z.optional(z.array(OptionsOverride)),
-	/**
-	 * The parameters used when downloading Discord images. Check [the docs](https://docs.discord.sex/reference#cdn-parameters) for a reference of all supported parameters.
-	 *
-	 * This should not be changed after creating the database, as it might cause the archiver to download various versions of the same media content.
-	 */
 	mediaConfig: z.optional(MediaConfig.partial()),
 });
 export type Config = z.infer<typeof Config>;

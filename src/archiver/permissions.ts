@@ -4,7 +4,7 @@ import { CachedTextLikeChannel, CachedGuild, GuildAccountData } from "./cache.js
 
 // Adapted from <https://github.com/discord/discord-api-docs/blob/aff1236f0e36b4e52b98cdc487b31c4ee52ab14e/docs/topics/Permissions.md?plain=1#L112-L157>
 
-export function computeGuildPermissions(account: Account, guild: CachedGuild, accountRoles: string[]): bigint {
+export function computeGuildPermissions(account: Account, guild: CachedGuild, accountRoles: Iterable<string>): bigint {
 	if (guild.ownerID === account.details!.id) {
 		return -1n;
 	} else {
@@ -55,8 +55,4 @@ export function computeChannelPermissions(account: Account, guild: CachedGuild, 
 
 		return permissions;
 	}
-}
-
-export function hasChannelPermissions(channelPermissions: bigint, testPermissions: bigint): boolean {
-	return (channelPermissions & DT.Permission.ViewChannel) !== 0n && (channelPermissions & testPermissions) === testPermissions;
 }
