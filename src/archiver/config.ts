@@ -14,7 +14,6 @@ function snowflakeChecker(value: unknown) {
 const Snowflake = z.custom(snowflakeChecker);
 
 const MessageOptions = z.object({
-	/** Whether to store this channel/server in the database. If false, no information about this channel/server and any sub-objects (like messages) will be stored. */
 	archiveMessages: z.boolean(),
 	storeNewMessages: z.boolean(),
 	storeMessageEdits: z.boolean(),
@@ -47,7 +46,6 @@ const MessageOptions = z.object({
 export type MessageOptions = z.infer<typeof MessageOptions>;
 
 const ChannelOptions = MessageOptions.extend({
-	/** Whether to store this channel/server in the database. If false, no information about this channel/server and any sub-objects (like messages) will be stored. */
 	archiveChannels: z.boolean(),
 	archiveThreads: z.boolean(),
 	storeNewChannels: z.boolean(),
@@ -65,7 +63,6 @@ type PartialChannelOptions = z.infer<typeof PartialChannelOptions>;
 export type ChannelOptions = BaseChannelOptions & CommonComputedOptions;
 
 const GuildOptions = ChannelOptions.extend({
-	/** Whether to store this channel/server in the database. If false, no information about this channel/server and any sub-objects (like messages) will be stored. */
 	archiveServers: z.boolean(),
 	storeServerEdits: z.boolean(),
 
@@ -113,7 +110,7 @@ const AccountConfig = z.object({
 	/** The Discord token, including the `Bot ` prefix, if applicable. */
 	token: z.string(),
 	/** The data to send in the identify payload when connecting to the Gateway. */
-	gatewayIdentifyData: z.object({}).passthrough(),
+	gatewayIdentifyData: z.optional(z.object({}).passthrough()),
 });
 
 const ImageOptions = z.object({

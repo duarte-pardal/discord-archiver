@@ -814,7 +814,7 @@ type GroupDMChannelFields = {
 	/** ID of the creator of the group DM or thread */
 	owner_id?: string;
 	/** Application ID of the group DM creator if it is bot-created */
-	application_id: string;
+	application_id?: string;
 	/** For group DM channels: whether the channel is managed by an application via the `gdm.join` OAuth2 scope */
 	managed?: boolean;
 };
@@ -1629,6 +1629,7 @@ export type GatewayMessageCreateDispatchPayload = GatewayGenericDispatchPayload<
 	mentions: PartialUserWithMemberField[];
 	/** Custom metadata for the message (max 25 keys, 1024 characters per key and value) */
 	metadata?: object;
+	nonce?: string;
 }>;
 export type GatewayMessageUpdateDispatchPayload = GatewayGenericDispatchPayload<"MESSAGE_UPDATE", GatewayMessageCreateDispatchPayload["d"]>;
 export type GatewayMessageDeleteDispatchPayload = GatewayGenericDispatchPayload<"MESSAGE_DELETE", {

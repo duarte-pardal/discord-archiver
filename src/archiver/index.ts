@@ -1532,6 +1532,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 				}
 			});
 
+			// TODO: This rate limiter needs to apply to each fetch, including repeated attempts after HTTP 429.
 			const restRateLimiter = new RateLimiter(49, 1000);
 			async function request<T>(endpoint: string, options = account.restOptions, abortIfFail?: boolean): Promise<RequestResult<T>> {
 				await restRateLimiter.whenFree();

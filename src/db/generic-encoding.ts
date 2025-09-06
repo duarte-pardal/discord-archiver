@@ -89,7 +89,7 @@ const schemas: { [OT in ObjectType]: Schema<InputObjectType[OT]> } = {
 	[ObjectType.User]: [
 		["id", ValueType.BigInteger],
 		["username", ValueType.String],
-		["discriminator", "ignore"],
+		["discriminator", "ignore"], // custom encoding
 		["global_name", ValueType.String, NullValue.Null],
 		["avatar", ValueType.ImageHash, NullValue.Null],
 		["avatar_decoration_data", "ignore"], // not archived
@@ -348,6 +348,7 @@ const schemas: { [OT in ObjectType]: Schema<InputObjectType[OT]> } = {
 		["guild_id", "ignore"],
 		["member", "ignore"],
 		["metadata", "ignore"],
+		["nonce", "ignore"],
 	],
 	[ObjectType.Attachment]: [
 		["id", ValueType.BigInteger],
