@@ -8,7 +8,7 @@ import * as fs from "node:fs";
 import * as DT from "../discord-api/types.js";
 import { default as SQLite, Statement, SqliteError } from "better-sqlite3";
 import { SingleRequest, SingleResponseFor, Timing, RequestType, IteratorRequest, IteratorResponseFor, AddSnapshotResult, SnapshotResponse } from "./types.js";
-import { encodeSnowflakeArray, encodeObject, ObjectType, encodeImageHash, decodeObject, encodePermissionOverwrites, decodePermissionOverwrites, decodeImageHash, encodeEmoji, encodeEmojiProps, DiscordEmojiProps, decodeEmojiProps, setLogger, decodeSnowflakeArray } from "./generic-encoding.js";
+import { encodeSnowflakeArray, encodeObject, ObjectType, encodeImageHash, decodeObject, encodePermissionOverwrites, decodePermissionOverwrites, decodeImageHash, encodeEmoji, encodeEmojiProps, decodeEmojiProps, setLogger, decodeSnowflakeArray } from "./generic-encoding.js";
 import { Logger } from "../util/log.js";
 import { snowflakeToTimestamp } from "../discord-api/snowflake.js";
 
@@ -188,7 +188,8 @@ UPDATE latest_member_snapshots SET _timestamp = :_timestamp, nick = :nick, avata
 SELECT _user_id FROM latest_member_snapshots WHERE _guild_id IS :_guild_id AND joined_at IS NOT NULL;
 `),
 		},
-		channel: getStatements("channel", "guild_id", ["position", "permission_overwrites", "name", "topic", "nsfw", "bitrate", "user_limit", "rate_limit_per_user", "icon", "owner_id", "parent_id", "rtc_region", "video_quality_mode", "thread_metadata__archived", "thread_metadata__auto_archive_duration", "thread_metadata__archive_timestamp", "thread_metadata__locked", "thread_metadata__invitable", "thread_metadata__create_timestamp", "default_auto_archive_duration", "flags", "applied_tags", "default_reaction_emoji", "default_thread_rate_limit_per_user", "default_sort_order", "default_forum_layout", "default_tag_setting"], ["guild_id", "type"]),
+		channel: getStatements("channel", "guild_id", ["position", "permission_overwrites", "name", "topic", "nsfw", "bitrate", "user_limit", "rate_limit_per_user", "icon", "owner_id", "parent_id", "rtc_region", "video_quality_mode", "default_auto_archive_duration", "flags", "default_reaction_emoji", "default_thread_rate_limit_per_user", "default_sort_order", "default_forum_layout", "default_tag_setting"], ["guild_id", "type"]),
+		thread: getStatements("thread", "parent_id", ["name", "rate_limit_per_user", "owner_id", "thread_metadata__archived", "thread_metadata__auto_archive_duration", "thread_metadata__archive_timestamp", "thread_metadata__locked", "thread_metadata__invitable", "thread_metadata__create_timestamp", "flags", "applied_tags"], ["parent_id", "type"]),
 		forumTag: getStatements("forum_tag", "channel_id", ["name", "moderated", "emoji"], ["channel_id"]),
 		message: {
 			...getStatements("message", "channel_id", ["content", "flags", "_attachment_ids"], ["channel_id", "author__id", "tts", "type", "message_reference__message_id", "message_reference__channel_id", "message_reference__guild_id", "_sticker_ids"]),
@@ -329,7 +330,7 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _deleted IS NULL AND user__id I
 	 */
 	function getChildrenSnapshot<T>(
 		statements: ChildObjectStatements,
-		parentID: bigint | string,
+		parentID: bigint | string | null,
 		timestamp: number | null | undefined,
 		decode: (snapshot: any) => T,
 	): IterableIterator<SnapshotResponse<T>> {
@@ -595,9 +596,9 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _deleted IS NULL AND user__id I
 				const timestamp = encodeTiming(req.timing);
 
 				const channel = encodeObject(ObjectType.Channel, req.channel);
-				if (req.channel.type === DT.ChannelType.DM || req.channel.type === DT.ChannelType.GroupDM) {
+				if (DT.isDirectChannel(req.channel)) {
 					channel.guild_id = 0;
-				} else if (req.channel.type === DT.ChannelType.PublicThread || req.channel.type === DT.ChannelType.PrivateThread || req.channel.type === DT.ChannelType.AnnouncementThread) {
+				} else if (DT.isThread(req.channel)) {
 					channel.guild_id = null;
 				}
 				channel.permission_overwrites = (req.channel as any).permission_overwrites == null ? null : encodePermissionOverwrites((req.channel as any).permission_overwrites);
@@ -608,7 +609,7 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _deleted IS NULL AND user__id I
 					for (const jsonTag of req.channel.available_tags) {
 						const tag = encodeObject(ObjectType.ForumTag, jsonTag);
 						tag.channel_id = req.channel.id;
-						tag.emoji = encodeEmojiProps(jsonTag as DiscordEmojiProps);
+						tag.emoji = encodeEmojiProps(jsonTag);
 						tag._timestamp = timestamp;
 						addSnapshot(objectStatements.forumTag, tag);
 					}
@@ -629,8 +630,21 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _deleted IS NULL AND user__id I
 				response = getChanges() > 0;
 				break;
 			}
+			case RequestType.AddThreadSnapshot: {
+				const thread = encodeObject(ObjectType.Thread, req.thread);
+				response = addSnapshot(objectStatements.thread, assignTiming(thread, req.timing));
+				break;
+			}
+			case RequestType.MarkThreadAsDeleted: {
+				objectStatements.thread.markAsDeleted.run({
+					id: req.id,
+					_deleted: encodeTiming(req.timing),
+				});
+				response = getChanges() > 0;
+				break;
+			}
 			case RequestType.GetChannels: {
-				response = getChildrenSnapshot(objectStatements.channel, req.guildID ?? 0n, req.timestamp, (snapshot) => {
+				response = getChildrenSnapshot(objectStatements.channel, req.guildID ?? null, req.timestamp, (snapshot) => {
 					const channel = decodeObject(ObjectType.Channel, snapshot);
 					channel.guild_id = req.guildID;
 					channel.permission_overwrites = snapshot.permission_overwrites === null ? null : decodePermissionOverwrites(snapshot.permission_overwrites);
@@ -639,7 +653,11 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _deleted IS NULL AND user__id I
 				break;
 			}
 			case RequestType.GetThreads: {
-				throw new Error("Unimplemented");
+				response = getChildrenSnapshot(objectStatements.thread, req.parentID, req.timestamp, (snapshot) => {
+					const thread = decodeObject(ObjectType.Thread, snapshot);
+					return thread;
+				});
+				break;
 			}
 			case RequestType.GetForumTags: {
 				response = getChildrenSnapshot(objectStatements.forumTag, req.channelID, req.timestamp, (snapshot) =>
@@ -648,6 +666,13 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _deleted IS NULL AND user__id I
 				break;
 			}
 			case RequestType.AddMessageSnapshot: {
+				if (
+					objectStatements.channel.doesExist.get({ id: req.message.channel_id }) === undefined &&
+					objectStatements.thread.doesExist.get({ id: req.message.channel_id }) === undefined
+				) {
+					throw new Error("Can't add a message from a channel/thread that isn't in the database.");
+				}
+
 				// Replace user data with references to the users table.
 				// Note: this mutates the original message object.
 				if (req.message.interaction_metadata?.user != null) {

@@ -14,6 +14,7 @@ export enum ObjectType {
 	Role,
 	Member,
 	Channel,
+	Thread,
 	Message,
 	Attachment,
 	ForumTag,
@@ -25,7 +26,8 @@ type InputObjectType = {
 	[ObjectType.Guild]: DT.Guild | DT.GatewayGuildCreateDispatchPayload["d"];
 	[ObjectType.Role]: DT.Role;
 	[ObjectType.Member]: DT.GuildMember;
-	[ObjectType.Channel]: DT.ChannelWithGuildID;
+	[ObjectType.Channel]: DT.DirectChannel | DT.GuildChannel | DT.GatewayChannelCreateDispatchPayload["d"];
+	[ObjectType.Thread]: DT.Thread;
 	[ObjectType.Message]: DT.Message | DT.GatewayMessageCreateDispatchPayload["d"];
 	[ObjectType.Attachment]: DT.Attachment;
 	[ObjectType.ForumTag]: DT.ForumTag;
@@ -243,11 +245,11 @@ const schemas: { [OT in ObjectType]: Schema<InputObjectType[OT]> } = {
 		["type", ValueType.Integer],
 		["guild_id", ValueType.BigInteger, NullValue.Absent],
 		["position", ValueType.Integer, NullValue.Absent],
-		["permission_overwrites", "ignore"],
+		["permission_overwrites", "ignore"], // custom encoding
 		["name", ValueType.String, NullValue.Null],
 		["topic", ValueType.String, NullValue.Null],
 		["nsfw", ValueType.Boolean, NullValue.Absent],
-		["last_message_id", "ignore"],
+		["last_message_id", "ignore"], // not archived
 		["bitrate", ValueType.Integer, NullValue.Absent],
 		["user_limit", ValueType.Integer, NullValue.Absent],
 		["rate_limit_per_user", ValueType.Integer, NullValue.Absent],
@@ -259,23 +261,10 @@ const schemas: { [OT in ObjectType]: Schema<InputObjectType[OT]> } = {
 		["last_pin_timestamp", "ignore"],
 		["rtc_region", ValueType.String, NullValue.Null],
 		["video_quality_mode", ValueType.Integer, NullValue.Absent],
-		["message_count", "ignore"], // not archived
-		["member_count", "ignore"], // not archived
-		["thread_metadata", [
-			["archived", ValueType.Boolean],
-			["auto_archive_duration", ValueType.Integer],
-			["archive_timestamp", ValueType.Timestamp],
-			["locked", ValueType.Boolean],
-			["invitable", ValueType.Boolean, NullValue.Absent],
-			["create_timestamp", ValueType.Timestamp, NullValue.Absent],
-		], NullValue.Absent],
-		["member", "ignore"], // not archived
 		["default_auto_archive_duration", ValueType.Integer, NullValue.Absent],
 		["permissions", "ignore"], // not archived
 		["flags", ValueType.Integer, NullValue.Absent],
-		["total_message_sent", "ignore"], // not archived
 		["available_tags", "ignore"], // not archived
-		["applied_tags", ValueType.BigIntegerArray, NullValue.Absent],
 		["default_reaction_emoji", ValueType.Emoji, NullValue.Null],
 		["default_thread_rate_limit_per_user", ValueType.Integer, NullValue.Absent],
 		["default_sort_order", ValueType.Integer, NullValue.Null],
@@ -291,6 +280,36 @@ const schemas: { [OT in ObjectType]: Schema<InputObjectType[OT]> } = {
 		["template", "ignore"], // not archived
 
 		["version" as KeyOfObject<ObjectType.Channel>, "ignore"], // not archived
+	],
+	[ObjectType.Thread]: [
+		["id", ValueType.BigInteger],
+		["type", ValueType.Integer],
+		["guild_id" as KeyOfObject<ObjectType.Thread>, "ignore"], // not archived (can be inferred from the parent channel)
+		["flags", ValueType.Integer, NullValue.Absent],
+		["name", ValueType.String, NullValue.Null],
+		["last_message_id", "ignore"], // not archived
+		["rate_limit_per_user", ValueType.Integer],
+		["owner_id", ValueType.BigInteger], // TODO: figure out whether this is constant
+		["parent_id", ValueType.BigInteger, NullValue.Null],
+		["last_pin_timestamp", "ignore"],
+		["message_count", "ignore"], // not archived
+		["member_count", "ignore"], // not archived
+		["thread_metadata", [
+			["archived", ValueType.Boolean],
+			["auto_archive_duration", ValueType.Integer],
+			["archive_timestamp", ValueType.Timestamp],
+			["locked", ValueType.Boolean],
+			["invitable", ValueType.Boolean, NullValue.Absent],
+			["create_timestamp", ValueType.Timestamp, NullValue.Absent],
+		], NullValue.Absent],
+		["member", "ignore"], // not archived
+		["total_message_sent", "ignore"], // not archived
+		["applied_tags", ValueType.BigIntegerArray, NullValue.Absent],
+
+		// For some reason, these properties from voice channels appear in threads.
+		["bitrate" as KeyOfObject<ObjectType.Thread>, "ignore"],
+		["rtc_region" as KeyOfObject<ObjectType.Thread>, "ignore"],
+		["user_limit" as KeyOfObject<ObjectType.Thread>, "ignore"],
 	],
 	[ObjectType.Message]: [
 		["id", ValueType.BigInteger],
@@ -470,11 +489,13 @@ export function decodeSnowflakeArray(buf: Uint8Array): string[] {
 // I have observed some objects with both `emoji_id` and `emoji_name` being sent by the API.
 // It probably isn't possible to create them with an unmodified client but it seems that the
 // servers don't check that only one property is set.
-export type DiscordEmojiProps = { emoji_id: string; emoji_name: null } | { emoji_id: null; emoji_name: string };
-export function encodeEmojiProps(emoji: DiscordEmojiProps): bigint | string {
-	return encodeEmoji({ id: emoji.emoji_id, name: emoji.emoji_name } as DT.PartialEmoji);
+export function encodeEmojiProps(emoji: DT.OptionalEmojiFields): bigint | string | null {
+	if (emoji.emoji_id != null)
+		return BigInt(emoji.emoji_id);
+	else
+		return emoji.emoji_name ?? null;
 }
-export function decodeEmojiProps(data: bigint | string): DiscordEmojiProps {
+export function decodeEmojiProps(data: bigint | string): DT.OptionalEmojiFields {
 	if (typeof data === "bigint")
 		return { emoji_id: String(data), emoji_name: null };
 	else
@@ -705,16 +726,6 @@ function decodeObjectRecursive(objectType: ObjectType, schema: ProcessedSchema, 
 	}
 
 	Object.assign(object, extra);
-	// for (const key in extra) {
-	// 	const entry = schema.properties.find(p => p[0] === key);
-	// 	if (entry === undefined) {
-	// 		object[key] = extra[key];
-	// 	} else {
-	// 		if (entry[1] !== "extra") {
-	// 			throw new TypeError(``);
-	// 		}
-	// 	}
-	// }
 
 	return object;
 }

@@ -512,8 +512,8 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 					db.transaction(async () => {
 						for (let i = list.threads.length - 1; i >= 0; i--) {
 							db.request({
-								type: RequestType.AddChannelSnapshot,
-								channel: list.threads[i],
+								type: RequestType.AddThreadSnapshot,
+								thread: list.threads[i],
 								timing: {
 									timestamp,
 									realtime: false,
@@ -955,8 +955,8 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 
 										for (const thread of guild.threads) {
 											db.request({
-												type: RequestType.AddChannelSnapshot,
-												channel: Object.assign(thread, { guild_id: guild.id }),
+												type: RequestType.AddThreadSnapshot,
+												thread: Object.assign(thread, { guild_id: guild.id }),
 												timing: guildSnapshotTiming,
 											});
 										}
@@ -1361,8 +1361,8 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 							await db.transaction(async () => {
 								for (const thread of threadsToArchive) {
 									db.request({
-										type: RequestType.AddChannelSnapshot,
-										channel: thread,
+										type: RequestType.AddThreadSnapshot,
+										thread,
 										timing,
 									});
 								}
@@ -1533,6 +1533,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 			});
 
 			// TODO: This rate limiter needs to apply to each fetch, including repeated attempts after HTTP 429.
+			// TODO: Abort without waiting for the rate limiter.
 			const restRateLimiter = new RateLimiter(49, 1000);
 			async function request<T>(endpoint: string, options = account.restOptions, abortIfFail?: boolean): Promise<RequestResult<T>> {
 				await restRateLimiter.whenFree();

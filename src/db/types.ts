@@ -37,6 +37,8 @@ export const enum RequestType {
 	AddChannelSnapshot,
 	MarkChannelAsDeleted,
 	GetChannels,
+	AddThreadSnapshot,
+	MarkThreadAsDeleted,
 	GetThreads,
 	GetForumTags,
 	AddMessageSnapshot,
@@ -136,7 +138,7 @@ export type AddMemberLeaveRequest = {
 export type AddChannelSnapshotRequest = {
 	type: RequestType.AddChannelSnapshot;
 	timing: Timing | null;
-	channel: DT.Channel;
+	channel: DT.DirectChannel | DT.GuildChannel;
 };
 export type MarkChannelAsDeletedRequest = {
 	type: RequestType.MarkChannelAsDeleted;
@@ -147,6 +149,16 @@ export type GetChannelsRequest = {
 	type: RequestType.GetChannels;
 	timestamp?: number | null | undefined;
 	guildID?: string | null | undefined;
+};
+export type AddThreadSnapshotRequest = {
+	type: RequestType.AddThreadSnapshot;
+	timing: Timing | null;
+	thread: DT.Thread;
+};
+export type MarkThreadAsDeletedRequest = {
+	type: RequestType.MarkThreadAsDeleted;
+	timing: Timing;
+	id: string;
 };
 export type GetThreadsRequest = {
 	type: RequestType.GetThreads;
@@ -281,6 +293,8 @@ export type SingleRequest =
 	AddMemberLeaveRequest |
 	AddChannelSnapshotRequest |
 	MarkChannelAsDeletedRequest |
+	AddThreadSnapshotRequest |
+	MarkThreadAsDeletedRequest |
 	AddMessageSnapshotRequest |
 	MarkMessageAsDeletedRequest |
 	AddInitialReactionsRequest |
@@ -326,6 +340,8 @@ export type SingleResponseFor<R extends SingleRequest> =
 	R extends AddMemberLeaveRequest ? AddSnapshotResult :
 	R extends AddChannelSnapshotRequest ? AddSnapshotResult :
 	R extends MarkChannelAsDeletedRequest ? boolean :
+	R extends AddThreadSnapshotRequest ? AddSnapshotResult :
+	R extends MarkThreadAsDeletedRequest ? boolean :
 	R extends AddMessageSnapshotRequest ? AddSnapshotResult :
 	R extends MarkMessageAsDeletedRequest ? boolean :
 	R extends AddInitialReactionsRequest ? void :
@@ -360,7 +376,7 @@ export type IteratorResponseFor<R extends IteratorRequest> =
 	R extends GetFilesRequest ? File :
 	R extends GetGuildsRequest ? SnapshotResponse<DT.Guild> :
 	R extends GetRolesRequest ? SnapshotResponse<DT.Role> :
-	R extends GetChannelsRequest ? SnapshotResponse<Omit<DT.GuildChannel, "available_tags">> :
+	R extends GetChannelsRequest ? SnapshotResponse<Omit<DT.DirectChannel | DT.GuildChannel, "available_tags">> :
 	R extends GetThreadsRequest ? SnapshotResponse<DT.Thread> :
 	R extends GetForumTagsRequest ? SnapshotResponse<DT.ForumTag> :
 	R extends GetMessagesRequest ? SnapshotResponse<DT.Message> :

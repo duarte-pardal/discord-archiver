@@ -2723,10 +2723,10 @@ for (const channel of guild.channels) {
 		timing: guildSnapshotTiming,
 	});
 }
-for (const channel of guild.threads) {
+for (const thread of guild.threads) {
 	request({
-		type: RequestType.AddChannelSnapshot,
-		channel: Object.assign(channel, { guild_id: guild.id }),
+		type: RequestType.AddThreadSnapshot,
+		thread: Object.assign(thread, { guild_id: guild.id }),
 		timing: guildSnapshotTiming,
 	});
 }
@@ -2875,6 +2875,19 @@ for (const channel of guild.channels) {
 	delete channel.version;
 	delete channel.status;
 }
+for (const thread of guild.threads) {
+	delete thread.guild_id;
+
+	delete thread.last_message_id;
+	delete thread.total_message_sent;
+	delete thread.member_count;
+	delete thread.message_count;
+
+	thread.thread_metadata.archive_timestamp = new Date(thread.thread_metadata.archive_timestamp).toISOString();
+	if (thread.thread_metadata.create_timestamp != null) {
+		thread.thread_metadata.create_timestamp = new Date(thread.thread_metadata.create_timestamp).toISOString();
+	}
+}
 for (const role of guild.roles) {
 	// Deprecated
 	delete (role as any).color;
@@ -2967,6 +2980,20 @@ await Promise.all([
 			return { expectedObject: channel, snapshot };
 		},
 		channel => ({ name: channel.name }),
+	)),
+	test("latest thread snapshots match", (t) => compareLatestSnapshots(
+		t,
+		{
+			type: RequestType.GetThreads,
+			parentID: "1367557310872031334",
+		},
+		guild.threads,
+		async (original, snapshots) => {
+			const snapshot = snapshots.find(s => s.data.id === original.id);
+			assert(snapshot !== undefined, "thread wasn't archived");
+			return { expectedObject: original, snapshot };
+		},
+		thread => ({ name: thread.name }),
 	)),
 	test("latest message snapshots match", (t) => compareLatestSnapshots(
 		t,

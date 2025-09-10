@@ -223,7 +223,7 @@ CREATE TABLE latest_channel_snapshots (
 	id INTEGER NOT NULL PRIMARY KEY,
 	_deleted INTEGER,
 	type INTEGER NOT NULL, -- the type of channel
-	guild_id INTEGER, -- the ID of the guild, 0 for DM channels and NULL for threads
+	guild_id INTEGER REFERENCES latest_guild_snapshots (id), -- the ID of the guild, or NULL for DM channels
 	---
 	_timestamp INTEGER NOT NULL,
 	_extra TEXT,
@@ -241,22 +241,15 @@ CREATE TABLE latest_channel_snapshots (
 	parent_id INTEGER, -- for guild channels: ID of the parent category for a channel (each parent category can contain up to 50 channels), for threads: ID of the text channel this thread was created
 	rtc_region TEXT, -- voice region ID for the voice channel, automatic when set to null
 	video_quality_mode INTEGER, -- the camera video quality mode of the voice channel, 1 when not present
-	thread_metadata__archived INTEGER, -- whether the thread is archived
-	thread_metadata__auto_archive_duration INTEGER, -- the thread will stop showing in the channel list after auto_archive_duration minutes of inactivity, can be set to: 60, 1440, 4320, 10080
-	thread_metadata__archive_timestamp INTEGER, -- timestamp when the thread's archive status was last changed, used for calculating recent activity
-	thread_metadata__locked INTEGER, -- whether the thread is locked; when a thread is locked, only users with MANAGE_THREADS can unarchive it
-	thread_metadata__invitable INTEGER, -- whether non-moderators can add other non-moderators to a thread; only available on private threads
-	thread_metadata__create_timestamp INTEGER, -- timestamp when the thread was created; only populated for threads created after 2022-01-09
 	default_auto_archive_duration INTEGER, -- default duration that the clients (not the API) will use for newly created threads, in minutes, to automatically archive the thread after recent activity, can be set to: 60, 1440, 4320, 10080
 	flags INTEGER, -- channel flags combined as a bitfield
-	applied_tags BLOB, -- IDs of the set of tags that have been applied to a thread in a GUILD_FORUM or a GUILD_MEDIA channel
 	default_reaction_emoji BLOB, -- the ID of a guild's custom emoji (if INTEGER) or the unicode character of the emoji (if TEXT) to show in the add reaction button on a thread in a GUILD_FORUM channel
 	default_thread_rate_limit_per_user INTEGER, -- the initial rate_limit_per_user to set on newly created threads in a channel. this field is copied to the thread at creation time and does not live update
 	default_sort_order INTEGER, -- the default sort order type used to order posts in GUILD_FORUM channels. Defaults to null, which indicates a preferred sort order hasn't been set by a channel admin
 	default_forum_layout INTEGER, -- the default forum layout view used to display posts in GUILD_FORUM channels. Defaults to 0, which indicates a layout view has not been set by a channel admin
 	default_tag_setting TEXT -- the default tag matching behavior
 );
-CREATE INDEX channel_by_guild_id ON latest_channel_snapshots (guild_id) WHERE guild_id IS NOT NULL;
+CREATE INDEX channel_by_guild_id ON latest_channel_snapshots (guild_id);
 CREATE TABLE previous_channel_snapshots (
 	id INTEGER NOT NULL REFERENCES latest_channel_snapshots (id),
 	_timestamp INTEGER NOT NULL,
@@ -275,20 +268,52 @@ CREATE TABLE previous_channel_snapshots (
 	parent_id INTEGER, -- for guild channels: ID of the parent category for a channel (each parent category can contain up to 50 channels), for threads: ID of the text channel this thread was created
 	rtc_region TEXT, -- voice region ID for the voice channel, automatic when set to null
 	video_quality_mode INTEGER, -- the camera video quality mode of the voice channel, 1 when not present
+	default_auto_archive_duration INTEGER, -- default duration that the clients (not the API) will use for newly created threads, in minutes, to automatically archive the thread after recent activity, can be set to: 60, 1440, 4320, 10080
+	flags INTEGER, -- channel flags combined as a bitfield
+	default_reaction_emoji BLOB, -- the ID of a guild's custom emoji (if INTEGER) or the unicode character of the emoji (if TEXT) to show in the add reaction button on a thread in a GUILD_FORUM channel
+	default_thread_rate_limit_per_user INTEGER, -- the initial rate_limit_per_user to set on newly created threads in a channel. this field is copied to the thread at creation time and does not live update
+	default_sort_order INTEGER, -- the default sort order type used to order posts in GUILD_FORUM channels. Defaults to null, which indicates a preferred sort order hasn't been set by a channel admin
+	default_forum_layout INTEGER, -- the default forum layout view used to display posts in GUILD_FORUM channels. Defaults to 0, which indicates a layout view has not been set by a channel admin
+	default_tag_setting TEXT, -- the default tag matching behavior
+	PRIMARY KEY (id, _timestamp)
+) WITHOUT ROWID;
+
+CREATE TABLE latest_thread_snapshots (
+	id INTEGER NOT NULL PRIMARY KEY,
+	_deleted INTEGER,
+	type INTEGER NOT NULL, -- the type of channel
+	parent_id INTEGER NOT NULL REFERENCES latest_channel_snapshots (id), -- ID of the channel this thread was created from
+	---
+	_timestamp INTEGER NOT NULL,
+	_extra TEXT,
+	name TEXT, -- the name of the channel (1-100 characters)
+	rate_limit_per_user INTEGER, -- amount of seconds a user has to wait before sending another message (0-21600); bots, as well as users with the permission manage_messages or manage_channel, are unaffected
+	owner_id INTEGER, -- ID of the creator of the thread
 	thread_metadata__archived INTEGER, -- whether the thread is archived
 	thread_metadata__auto_archive_duration INTEGER, -- the thread will stop showing in the channel list after auto_archive_duration minutes of inactivity, can be set to: 60, 1440, 4320, 10080
 	thread_metadata__archive_timestamp INTEGER, -- timestamp when the thread's archive status was last changed, used for calculating recent activity
 	thread_metadata__locked INTEGER, -- whether the thread is locked; when a thread is locked, only users with MANAGE_THREADS can unarchive it
 	thread_metadata__invitable INTEGER, -- whether non-moderators can add other non-moderators to a thread; only available on private threads
 	thread_metadata__create_timestamp INTEGER, -- timestamp when the thread was created; only populated for threads created after 2022-01-09
-	default_auto_archive_duration INTEGER, -- default duration that the clients (not the API) will use for newly created threads, in minutes, to automatically archive the thread after recent activity, can be set to: 60, 1440, 4320, 10080
+	flags INTEGER, -- channel flags combined as a bitfield
+	applied_tags BLOB -- IDs of the set of tags that have been applied to a thread in a GUILD_FORUM or a GUILD_MEDIA channel
+);
+CREATE INDEX thread_by_parent_id ON latest_thread_snapshots (parent_id);
+CREATE TABLE previous_thread_snapshots (
+	id INTEGER NOT NULL REFERENCES latest_thread_snapshots (id),
+	_timestamp INTEGER NOT NULL,
+	_extra TEXT,
+	name TEXT, -- the name of the channel (1-100 characters)
+	rate_limit_per_user INTEGER, -- amount of seconds a user has to wait before sending another message (0-21600); bots, as well as users with the permission manage_messages or manage_channel, are unaffected
+	owner_id INTEGER, -- ID of the creator of the thread
+	thread_metadata__archived INTEGER, -- whether the thread is archived
+	thread_metadata__auto_archive_duration INTEGER, -- the thread will stop showing in the channel list after auto_archive_duration minutes of inactivity, can be set to: 60, 1440, 4320, 10080
+	thread_metadata__archive_timestamp INTEGER, -- timestamp when the thread's archive status was last changed, used for calculating recent activity
+	thread_metadata__locked INTEGER, -- whether the thread is locked; when a thread is locked, only users with MANAGE_THREADS can unarchive it
+	thread_metadata__invitable INTEGER, -- whether non-moderators can add other non-moderators to a thread; only available on private threads
+	thread_metadata__create_timestamp INTEGER, -- timestamp when the thread was created; only populated for threads created after 2022-01-09
 	flags INTEGER, -- channel flags combined as a bitfield
 	applied_tags BLOB, -- IDs of the set of tags that have been applied to a thread in a GUILD_FORUM or a GUILD_MEDIA channel
-	default_reaction_emoji BLOB, -- the ID of a guild's custom emoji (if INTEGER) or the unicode character of the emoji (if TEXT) to show in the add reaction button on a thread in a GUILD_FORUM channel
-	default_thread_rate_limit_per_user INTEGER, -- the initial rate_limit_per_user to set on newly created threads in a channel. this field is copied to the thread at creation time and does not live update
-	default_sort_order INTEGER, -- the default sort order type used to order posts in GUILD_FORUM channels. Defaults to null, which indicates a preferred sort order hasn't been set by a channel admin
-	default_forum_layout INTEGER, -- the default forum layout view used to display posts in GUILD_FORUM channels. Defaults to 0, which indicates a layout view has not been set by a channel admin
-	default_tag_setting TEXT, -- the default tag matching behavior
 	PRIMARY KEY (id, _timestamp)
 ) WITHOUT ROWID;
 
@@ -322,7 +347,7 @@ CREATE TABLE previous_forum_tag_snapshots (
 CREATE TABLE latest_message_snapshots (
 	id INTEGER NOT NULL PRIMARY KEY,
 	_deleted INTEGER,
-	channel_id INTEGER NOT NULL REFERENCES latest_channel_snapshots (id), -- ID of the channel the message was sent in
+	channel_id INTEGER NOT NULL, -- ID of the channel the message was sent in
 	author__id INTEGER NOT NULL, -- ID of the user who sent the message or internal ID of the webhook user
 	tts INTEGER NOT NULL, -- whether this was a TTS message
 	type INTEGER NOT NULL, -- type of message

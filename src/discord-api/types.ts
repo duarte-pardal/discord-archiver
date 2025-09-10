@@ -811,7 +811,7 @@ type DMChannelFields = {
 type GroupDMChannelFields = {
 	/** Icon hash of the group DM */
 	icon?: string | null;
-	/** ID of the creator of the group DM or thread */
+	/** ID of the creator of the group DM */
 	owner_id?: string;
 	/** Application ID of the group DM creator if it is bot-created */
 	application_id?: string;
@@ -879,8 +879,22 @@ type ThreadChannelFields = {
 	 * channels) (may not point to an existing or valid message or thread)
 	 */
 	last_message_id?: string | null;
+	/**
+	 * Amount of seconds a user has to wait before sending another message (0-21600)
+	 *
+	 * Bots, as well as users with the permission manage messages or manage channel, are unaffected.
+	 */
+	rate_limit_per_user: number;
+	/** ID of the creator of the thread */
+	owner_id: string;
 	/** ID of the channel this thread was created from */
 	parent_id: string;
+	/**
+	 * When the last pinned message was pinned
+	 *
+	 * This may be `null` in events such as guild create when a message is not pinned.
+	 */
+	last_pin_timestamp?: string | null;
 	/**
 	 * Number of messages (not including the initial message or deleted messages) in a thread
 	 *
@@ -974,11 +988,6 @@ export type Channel =
 	DirectChannel |
 	GuildChannel |
 	Thread;
-
-export type ChannelWithGuildID =
-	DirectChannel |
-	(GuildChannel & GuildIDChannelFields) |
-	(Thread & GuildIDChannelFields);
 
 export type ThreadMember = {
 	/** Thread ID */
