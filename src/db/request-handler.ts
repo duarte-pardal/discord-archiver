@@ -7,10 +7,11 @@
 import * as fs from "node:fs";
 import * as DT from "../discord-api/types.js";
 import { default as SQLite, Statement, SqliteError } from "better-sqlite3";
-import { SingleRequest, SingleResponseFor, Timing, RequestType, IteratorRequest, IteratorResponseFor, AddSnapshotResult, SnapshotResponse } from "./types.js";
+import { SingleRequest, SingleResponseFor, Timing, RequestType, IteratorRequest, IteratorResponseFor, AddSnapshotResult, ObjectSnapshotResponse } from "./types.js";
 import { encodeSnowflakeArray, encodeObject, ObjectType, encodeImageHash, decodeObject, encodePermissionOverwrites, decodePermissionOverwrites, decodeImageHash, encodeEmoji, encodeEmojiProps, decodeEmojiProps, setLogger, decodeSnowflakeArray } from "./generic-encoding.js";
 import { Logger } from "../util/log.js";
 import { snowflakeToTimestamp } from "../discord-api/snowflake.js";
+import { createOnceFunction } from "../util/once.js";
 
 const SNOWFLAKE_LOWER_BOUND = 1n << 32n;
 const MAX_INT64 = (1n << 63n) - 1n;
@@ -26,6 +27,7 @@ export type RequestHandler = {
 
 export function getRequestHandler({ path, log }: { path: string; log?: Logger }): RequestHandler {
 	setLogger(log);
+	const logOnce = createOnceFunction(log);
 
 	const db = new SQLite(path, {
 		verbose: log?.debug,
@@ -67,15 +69,16 @@ export function getRequestHandler({ path, log }: { path: string; log?: Logger })
 		/** Sets the _deleted timestamp. */
 		markAsDeleted: Statement;
 	};
-	type ChildObjectStatements = DeletableObjectStatements & {
+	type ChildObjectStatements = ObjectStatements & {
 		/** Gets the latest snapshot for all child objects of a given parent */
 		getLatestSnapshotsByParentID: Statement;
 		/** Gets the IDs of all non-deleted objects */
 		getNotDeletedObjectIDsByParentID: Statement;
 	};
+	type DeletableChildObjectStatements = DeletableObjectStatements & ChildObjectStatements;
 
 	function getStatements(objectName: string, parentIDName: null, snapshotKeys: string[], objectKeys: string[]): DeletableObjectStatements;
-	function getStatements(objectName: string, parentIDName: string, snapshotKeys: string[], objectKeys: string[]): ChildObjectStatements;
+	function getStatements(objectName: string, parentIDName: string, snapshotKeys: string[], objectKeys: string[]): DeletableChildObjectStatements;
 	function getStatements(objectName: string, parentIDName: string | null, snapshotKeys: string[], objectKeys: string[]): DeletableObjectStatements {
 		snapshotKeys.push("_extra");
 		const sk = snapshotKeys.join(", ");
@@ -121,7 +124,7 @@ SELECT id, _deleted, ${ok} _timestamp, ${sk} FROM latest_${objectName}_snapshots
 				getNotDeletedObjectIDsByParentID: db.prepare(`\
 SELECT id FROM latest_${objectName}_snapshots WHERE ${parentIDName} IS :$parentID AND _deleted IS NULL;
 `),
-			} satisfies Omit<ChildObjectStatements, keyof DeletableObjectStatements>);
+			} satisfies Omit<ChildObjectStatements, keyof ObjectStatements>);
 		}
 		return statements;
 	}
@@ -154,40 +157,48 @@ SELECT id FROM latest_${objectName}_snapshots WHERE ${parentIDName} IS :$parentI
 		getLastMessageID: db.prepare("SELECT max(id) FROM latest_message_snapshots WHERE channel_id = :channel_id;"),
 	} as const;
 	const objectStatements = {
-		user: getStatements("user", null, ["username", "discriminator", "global_name", "avatar", "public_flags"], ["bot", "system"]),
+		user: getStatements("user", null, ["username", "discriminator", "global_name", "avatar", "avatar_decoration_data__asset", "avatar_decoration_data__sku_id", "avatar_decoration_data__expires_at", "collectibles__nameplate__asset", "collectibles__nameplate__sku_id", "collectibles__nameplate__label", "collectibles__nameplate__palette", "collectibles__nameplate__expires_at", "display_name_styles__font_id", "display_name_styles__effect_id", "display_name_styles__colors", "primary_guild__identity_guild_id", "primary_guild__identity_enabled", "primary_guild__tag", "primary_guild__badge", "public_flags"], ["bot", "system"]),
 		guild: getStatements("guild", null, ["name", "icon", "splash", "discovery_splash", "owner_id", "afk_channel_id", "afk_timeout", "widget_enabled", "widget_channel_id", "verification_level", "default_message_notifications", "explicit_content_filter", "mfa_level", "system_channel_id", "system_channel_flags", "rules_channel_id", "max_presences", "max_members", "vanity_url_code", "description", "banner", "premium_tier", "premium_subscription_count", "preferred_locale", "public_updates_channel_id", "max_video_channel_users", "max_stage_video_channel_users", "nsfw_level", "premium_progress_bar_enabled", "profile__tag", "profile__badge"], []),
 		role: getStatements("role", "_guild_id", ["name", "colors__primary_color", "colors__secondary_color", "colors__tertiary_color", "hoist", "icon", "unicode_emoji", "position", "permissions", "mentionable", "flags", "tags__integration_id", "tags__subscription_listing_id", "tags__available_for_purchase", "tags__guild_connections"], ["_guild_id", "managed", "tags__bot_id", "tags__premium_subscriber"]),
-		member: {
-			doesExist: db.prepare(`\
-SELECT 1 FROM latest_member_snapshots WHERE _user_id = :_user_id AND _guild_id = :_guild_id;
+		member: (() => {
+			const snapshotKeys = ["_extra", "nick", "avatar", "avatar_decoration_data__asset", "avatar_decoration_data__sku_id", "avatar_decoration_data__expires_at", "collectibles__nameplate__asset", "collectibles__nameplate__sku_id", "collectibles__nameplate__label", "collectibles__nameplate__palette", "collectibles__nameplate__expires_at", "banner", "roles", "joined_at", "premium_since", "deaf", "mute", "flags", "pending", "communication_disabled_until"];
+			const sk = snapshotKeys.join(", ");
+			const sv = snapshotKeys.map(k => ":" + k).join(", ");
+			return {
+				doesExist: db.prepare(`\
+SELECT 1 FROM member_snapshots WHERE _guild_id = :_guild_id AND _user_id = :_user_id;
 `),
-			getLatestSnapshot: db.prepare(`\
-SELECT _user_id, _guild_id, _timestamp, nick, avatar, roles, joined_at, premium_since, pending, communication_disabled_until FROM latest_member_snapshots WHERE _user_id = :_user_id AND _guild_id = :_guild_id;
+				getLatestSnapshot: db.prepare(`\
+SELECT _guild_id, _user_id, max(_timestamp) AS _timestamp, ${sk} FROM member_snapshots WHERE _guild_id = :_guild_id AND _user_id = :_user_id;
 `),
-			getPreviousSnapshot: db.prepare(`\
-SELECT _user_id, _guild_id, max(_timestamp), nick, avatar, roles, joined_at, premium_since, pending, communication_disabled_until FROM previous_member_snapshots WHERE _user_id = :_user_id AND _guild_id = :_guild_id AND _timestamp <= :_timestamp;
+				getPreviousSnapshot: db.prepare(`\
+SELECT _guild_id, _user_id, max(_timestamp), ${sk} FROM member_snapshots WHERE _guild_id = :_guild_id AND _user_id = :_user_id AND _timestamp <= :_timestamp;
 `),
-			isLatestSnapshotEqual: db.prepare(`
-SELECT 1 FROM latest_member_snapshots WHERE _user_id = :_user_id AND _guild_id = :_guild_id AND nick IS :nick AND avatar IS :avatar AND roles IS :roles AND joined_at IS :joined_at AND premium_since IS :premium_since AND pending IS :pending AND communication_disabled_until IS :communication_disabled_until;
+				isLatestSnapshotEqual: db.prepare(`
+SELECT 1 FROM member_snapshots WHERE _guild_id = :_guild_id AND _user_id = :_user_id AND _timestamp = (SELECT max(_timestamp) FROM member_snapshots WHERE _guild_id = :_guild_id AND _user_id = :_user_id) AND ${snapshotKeys.map(k => `${k} IS :${k}`).join(" AND ")};
 `),
-			getLatestTimestamp: db.prepare(`\
-SELECT _timestamp FROM latest_member_snapshots WHERE _user_id = :_user_id AND _guild_id = :_guild_id;
+				getLatestTimestamp: db.prepare(`\
+SELECT max(_timestamp) AS _timestamp FROM member_snapshots WHERE _guild_id = :_guild_id AND _user_id = :_user_id;
 `),
-			addLatestSnapshot: db.prepare(`\
-INSERT INTO latest_member_snapshots (_user_id, _guild_id, _timestamp, nick, avatar, roles, joined_at, premium_since, pending, communication_disabled_until)
-VALUES (:_user_id, :_guild_id, :_timestamp, :nick, :avatar, :roles, :joined_at, :premium_since, :pending, :communication_disabled_until);
+				addLatestSnapshot: db.prepare(`\
+INSERT INTO member_snapshots (_guild_id, _user_id, _timestamp, ${sk})
+VALUES (:_guild_id, :_user_id, :_timestamp, ${sv});
 `),
-			copyLatestSnapshot: db.prepare(`\
-INSERT INTO previous_member_snapshots (_user_id, _guild_id, _timestamp, nick, avatar, roles, joined_at, premium_since, pending, communication_disabled_until)
-SELECT _user_id, _guild_id, _timestamp, nick, avatar, roles, joined_at, premium_since, pending, communication_disabled_until FROM latest_member_snapshots WHERE _user_id = :_user_id AND _guild_id = :_guild_id;
+				copyLatestSnapshot: db.prepare(`\
+SELECT 0 WHERE FALSE;
 `),
-			replaceLatestSnapshot: db.prepare(`\
-UPDATE latest_member_snapshots SET _timestamp = :_timestamp, nick = :nick, avatar = :avatar, roles = :roles, joined_at = :joined_at, premium_since = :premium_since, pending = :pending, communication_disabled_until = :communication_disabled_until WHERE _user_id = :_user_id AND _guild_id = :_guild_id;
+				replaceLatestSnapshot: db.prepare(`\
+INSERT INTO member_snapshots (_guild_id, _user_id, _timestamp, ${sk})
+VALUES (:_guild_id, :_user_id, :_timestamp, ${sv});
 `),
-			getCurrentMemberUserIDsByGuildID: db.prepare(`\
-SELECT _user_id FROM latest_member_snapshots WHERE _guild_id IS :_guild_id AND joined_at IS NOT NULL;
+				getLatestSnapshotsByParentID: db.prepare(`\
+SELECT _guild_id, _user_id, _timestamp, ${sk} FROM member_snapshots WHERE _guild_id IS :$parentID AND _timestamp = (SELECT max(_timestamp) FROM member_snapshots subquery WHERE subquery._guild_id = :$parentID AND subquery._user_id = member_snapshots._user_id);
 `),
-		},
+				getNotDeletedObjectIDsByParentID: db.prepare(`\
+SELECT _user_id AS id FROM member_snapshots WHERE _guild_id IS :$parentID AND _timestamp = (SELECT max(_timestamp) FROM member_snapshots subquery WHERE subquery._guild_id = :$parentID AND subquery._user_id = member_snapshots._user_id);
+`),
+			};
+		})(),
 		channel: getStatements("channel", "guild_id", ["position", "permission_overwrites", "name", "topic", "nsfw", "bitrate", "user_limit", "rate_limit_per_user", "icon", "owner_id", "parent_id", "rtc_region", "video_quality_mode", "default_auto_archive_duration", "flags", "default_reaction_emoji", "default_thread_rate_limit_per_user", "default_sort_order", "default_forum_layout", "default_tag_setting"], ["guild_id", "type"]),
 		thread: getStatements("thread", "parent_id", ["name", "rate_limit_per_user", "owner_id", "thread_metadata__archived", "thread_metadata__auto_archive_duration", "thread_metadata__archive_timestamp", "thread_metadata__locked", "thread_metadata__invitable", "thread_metadata__create_timestamp", "flags", "applied_tags"], ["parent_id", "type"]),
 		forumTag: getStatements("forum_tag", "channel_id", ["name", "moderated", "emoji"], ["channel_id"]),
@@ -222,6 +233,33 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _deleted IS NULL AND user__id I
 		},
 	} as const;
 
+	const nullMember = {
+		_guild_id: 0n, // will be replaced when used
+		_user_id: 0n, // will be replaced when used
+		_timestamp: 0n, // will be replaced when used
+		_extra: null,
+		nick: null,
+		avatar: null,
+		avatar_decoration_data__asset: null,
+		avatar_decoration_data__sku_id: null,
+		avatar_decoration_data__expires_at: null,
+		collectibles__nameplate__asset: null,
+		collectibles__nameplate__sku_id: null,
+		collectibles__nameplate__label: null,
+		collectibles__nameplate__palette: null,
+		collectibles__nameplate__expires_at: null,
+		banner: null,
+		roles: null,
+		joined_at: null,
+		premium_since: null,
+		deaf: null,
+		mute: null,
+		flags: 0n,
+		pending: 0n,
+		communication_disabled_until: null,
+	};
+
+
 	function encodeTiming(timing: Timing | null): bigint {
 		return timing === null ? 0n : BigInt(timing.timestamp) << 1n | BigInt(timing.realtime);
 	}
@@ -240,17 +278,17 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _deleted IS NULL AND user__id I
 	// TODO: Benchmark and optimize
 	/**
 	 * Adds a snapshot of an object to the database.
-	 * @param partial If `true`, get the properties missing in `object` from the latest recorded snapshot
+	 * @param partialKeys If not nullish, get the properties missing in `object` from the latest
+	 * recorded snapshot or, if there are no snapshots, from `partialDefault`.
 	 * @param checkIfChanged If `true`, prevent recording a snapshot that is equal to the latest snapshot
 	 */
-	function addSnapshot(statements: ObjectStatements, object: any, partial = false, checkIfChanged = true): AddSnapshotResult {
-		if (partial) {
+	function addSnapshot(statements: ObjectStatements, object: any, partialKeys?: string[], checkIfChanged = true): AddSnapshotResult {
+		if (partialKeys != null) {
 			// `object` has fields missing. Add the missing fields from the last snapshot.
 			object.$getAll = 0;
-			const oldObject = statements.getLatestSnapshot.get(object);
-			if (!oldObject) {
+			const oldObject: any = statements.getLatestSnapshot.get(object);
+			if (oldObject === undefined || oldObject._timestamp === null) {
 				try {
-					// This will probably throw since there are probably properties missing
 					statements.addLatestSnapshot.run(object);
 					return AddSnapshotResult.AddedFirstSnapshot;
 				} catch (err) {
@@ -261,7 +299,9 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _deleted IS NULL AND user__id I
 					}
 				}
 			}
-			object = Object.assign(oldObject, object);
+			for (const key of partialKeys) {
+				object[key] ??= oldObject[key];
+			}
 		} else {
 			if (statements.doesExist.get(object) === undefined) {
 				statements.addLatestSnapshot.run(object);
@@ -282,7 +322,7 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _deleted IS NULL AND user__id I
 	}
 
 	/** Marks as deleted all child objects of a specific parent whose IDs are not in a set. */
-	function syncDeletions(statements: ChildObjectStatements, parentID: bigint, ids: Set<bigint>, timestamp: bigint) {
+	function syncDeletions(statements: DeletableChildObjectStatements, parentID: bigint, ids: Set<bigint>, timestamp: bigint) {
 		const stored = statements.getNotDeletedObjectIDsByParentID.all({ $parentID: parentID }) as any[];
 		for (const { id } of stored) {
 			if (!ids.has(id)) {
@@ -297,7 +337,7 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _deleted IS NULL AND user__id I
 		id: bigint | string,
 		timestamp: number | null | undefined,
 		decode: (snapshot: any) => T,
-	): SnapshotResponse<T> | undefined {
+	): ObjectSnapshotResponse<T> | undefined {
 		const timing = timestamp == null ? MAX_INT64 : (BigInt(timestamp) << 1n | 1n);
 		const snapshot: any = statements.getLatestSnapshot.get({
 			id,
@@ -323,6 +363,9 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _deleted IS NULL AND user__id I
 		};
 	}
 
+	function getDeletedObjectTiming(snapshot: any) {
+		return decodeTiming(snapshot._deleted);
+	}
 	/**
 	 * Gets a snapshot corresponding to the specified timestamp for each child of an object.
 	 * @param timestamp The moment in time the returned snapshots are for. If nullish, the latest snapshots are returned.
@@ -333,7 +376,8 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _deleted IS NULL AND user__id I
 		parentID: bigint | string | null,
 		timestamp: number | null | undefined,
 		decode: (snapshot: any) => T,
-	): IterableIterator<SnapshotResponse<T>> {
+		getDeletedTiming: (snapshot: any) => Timing | null = getDeletedObjectTiming,
+	): IterableIterator<ObjectSnapshotResponse<T>> {
 		const timing = timestamp == null ? MAX_INT64 : (BigInt(timestamp) << 1n | 1n);
 		return (function* () {
 			for (const result of statements.getLatestSnapshotsByParentID.iterate({
@@ -351,7 +395,7 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _deleted IS NULL AND user__id I
 				}
 				yield {
 					timing: decodeTiming(snapshot._timestamp),
-					deletedTiming: decodeTiming(snapshot._deleted),
+					deletedTiming: getDeletedTiming(snapshot),
 					data: decode(snapshot),
 				};
 			}
@@ -377,6 +421,22 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _deleted IS NULL AND user__id I
 		const user = decodeObject(ObjectType.User, snapshot);
 		user.discriminator = snapshot.discriminator === null ? "0" : snapshot.discriminator;
 		user.flags = user.public_flags;
+		if (
+			user.primary_guild.identity_guild_id === null &&
+			user.primary_guild.identity_enabled === null &&
+			user.primary_guild.tag === null &&
+			user.primary_guild.badge === null &&
+			Object.keys(user.primary_guild).length === 4
+		) {
+			user.primary_guild = null;
+		}
+		if (
+			user.collectibles.nameplate == null &&
+			Object.keys(user.collectibles).length === 1
+		) {
+			user.collectibles = null;
+		}
+		user.clan = user.primary_guild;
 		return user;
 	}
 
@@ -403,6 +463,8 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _deleted IS NULL AND user__id I
 				flags: 0,
 				bot: true,
 				global_name: null,
+				primary_guild: null,
+				clan: null,
 			};
 		} else {
 			delete message.webhook_id;
@@ -521,6 +583,28 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _deleted IS NULL AND user__id I
 				break;
 			}
 			case RequestType.AddUserSnapshot: {
+				if (req.user.flags != null && req.user.flags !== req.user.public_flags) {
+					logOnce("flags !== public_flags")?.warning?.("There's an user object with `flags` is different from `public_flags`.");
+				}
+
+				// Sometimes, Discord sends a `primary_guild` object with all properties set to `null`
+				// except for `identity_enabled`, which is set to `false`.
+				if (
+					req.user.primary_guild != null &&
+					req.user.primary_guild.identity_guild_id == null &&
+					!req.user.primary_guild.identity_enabled &&
+					req.user.primary_guild.tag == null &&
+					req.user.primary_guild.badge == null &&
+					Object.keys(req.user.primary_guild).every(k =>
+						k == "identity_guild_id" ||
+						k == "identity_enabled" ||
+						k == "tag" ||
+						k == "badge",
+					)
+				) {
+					req.user.primary_guild = null;
+				}
+
 				const user = encodeObject(ObjectType.User, req.user);
 				user.discriminator = req.user.discriminator === "0" ? null : req.user.discriminator;
 				response = addSnapshot(objectStatements.user, assignTiming(user, req.timing));
@@ -549,47 +633,65 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _deleted IS NULL AND user__id I
 				break;
 			}
 			case RequestType.SyncGuildMembers: {
-				const timestamp = encodeTiming(req.timing);
-				const stored = objectStatements.member.getCurrentMemberUserIDsByGuildID.all({ _guild_id: req.guildID }) as any[];
-				const sqlParams = {
-					_guild_id: req.guildID,
-					_user_id: 0n,
-					_timestamp: timestamp,
-					nick: null,
-					avatar: null,
-					roles: null,
-					joined_at: null,
-					premium_since: null,
-					pending: null,
-					communication_disabled_until: null,
-				};
-				for (const { _user_id: userID } of stored) {
-					if (!req.userIDs.has(userID)) {
-						sqlParams._user_id = userID;
-						addSnapshot(objectStatements.member, sqlParams);
+				nullMember._guild_id = req.guildID;
+				nullMember._timestamp = encodeTiming(req.timing);
+				const stored = objectStatements.member.getNotDeletedObjectIDsByParentID.all({ $parentID: req.guildID }) as any[];
+				for (const { id } of stored) {
+					if (!req.userIDs.has(id)) {
+						nullMember._user_id = id;
+						addSnapshot(objectStatements.member, nullMember);
 					}
 				}
 				break;
 			}
-			case RequestType.AddMemberSnapshot: {
-				response = addSnapshot(objectStatements.member, Object.assign(assignTiming(encodeObject(ObjectType.Member, req.member, req.partial), req.timing), {
+			case RequestType.AddGuildMemberSnapshot: {
+				if ((req.member.joined_at satisfies string as unknown) == null) {
+					throw new TypeError("`joined_at` is missing on a member object.");
+				}
+
+				requestHandler({
+					type: RequestType.AddUserSnapshot,
+					user: req.member.user,
+					timing: {
+						timestamp: req.timing.timestamp,
+						realtime: false,
+					},
+				});
+
+				response = addSnapshot(objectStatements.member, Object.assign(assignTiming(encodeObject(ObjectType.Member, req.member), req.timing), {
 					_guild_id: BigInt(req.guildID),
-					_user_id: BigInt(req.userID),
-				}), req.partial);
+					_user_id: BigInt(req.member.user.id),
+				}), ["deaf", "mute"]);
 				break;
 			}
-			case RequestType.AddMemberLeave: {
-				response = addSnapshot(objectStatements.member, assignTiming({
-					_guild_id: BigInt(req.guildID),
-					_user_id: BigInt(req.userID),
-					nick: null,
-					avatar: null,
-					roles: null,
-					joined_at: null,
-					premium_since: null,
-					pending: null,
-					communication_disabled_until: null,
-				}, req.timing));
+			case RequestType.AddGuildMemberLeave: {
+				nullMember._guild_id = BigInt(req.guildID);
+				nullMember._user_id = BigInt(req.userID);
+				nullMember._timestamp = encodeTiming(req.timing);
+				response = addSnapshot(objectStatements.member, nullMember);
+				break;
+			}
+			case RequestType.GetGuildMembers: {
+				response = getChildrenSnapshot(
+					objectStatements.member,
+					req.guildID,
+					req.timestamp,
+					(snapshot) => {
+						const member = decodeObject(ObjectType.Member, snapshot);
+						if (
+							member !== undefined &&
+							member.collectibles.nameplate === null &&
+							Object.keys(member.collectibles).length === 1
+						) {
+							member.collectibles = null;
+						}
+						const user = getObjectSnapshot(objectStatements.user, snapshot._user_id, req.timestamp, decodeUser)!.data;
+						return member === undefined ?
+							{ user } : // the member was not in the guild at the specified timestamp
+							Object.assign(member, { user });
+					},
+					(snapshot) => snapshot.joined_at != null ? null : decodeTiming(snapshot._timestamp),
+				);
 				break;
 			}
 			case RequestType.AddChannelSnapshot: {
@@ -673,6 +775,16 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _deleted IS NULL AND user__id I
 					throw new Error("Can't add a message from a channel/thread that isn't in the database.");
 				}
 
+				for (const user of req.message.mentions) {
+					requestHandler({
+						type: RequestType.AddUserSnapshot,
+						user,
+						timing: {
+							timestamp: req.timestamp,
+							realtime: false,
+						},
+					});
+				}
 				// Replace user data with references to the users table.
 				// Note: this mutates the original message object.
 				if (req.message.interaction_metadata?.user != null) {

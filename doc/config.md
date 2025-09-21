@@ -211,7 +211,7 @@ Controls whether to record when members from this server join, leave, change nic
 
 #### `downloadAllMemberAvatars` (boolean)
 
-Controls whether to download and store the avatars of the all server members.
+Controls whether to download and store the main and per&hyphen;server avatars and per&hyphen;server banners of the all server members.
 
 #### `downloadServerAssets` (boolean)
 

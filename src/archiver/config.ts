@@ -130,6 +130,8 @@ const MediaConfig = z.object({
 
 	avatar: ImageOptions,
 	animatedAvatar: AnimatedImageOptions,
+	userBanner: ImageOptions,
+	animatedUserBanner: AnimatedImageOptions,
 
 	serverIcon: ImageOptions,
 	animatedServerIcon: AnimatedImageOptions,
@@ -162,11 +164,13 @@ export type ParsedConfig = {
 export function isFileStoreNeeded(config: ParsedConfig): boolean {
 	function containsDownloadOptions(options: PartialGuildOptions) {
 		return (
+			options.downloadAuthorAvatars === true ||
 			options.downloadAttachments === true ||
 			options.downloadEmbeddedImages === true ||
 			options.downloadEmbeddedVideos === true ||
 			options.downloadEmojisInMessages === true ||
 			options.downloadEmojisInReactions === true ||
+			options.downloadAllMemberAvatars === true ||
 			options.downloadServerAssets === true ||
 			options.downloadExpressions === true
 		);
@@ -295,6 +299,8 @@ export async function parseConfig(json5Config: string): Promise<ParsedConfig> {
 		defaultAnimatedImage: defaultAnimatedImageConfig,
 		avatar: inputMediaConfig.avatar ?? defaultImageConfig,
 		animatedAvatar: inputMediaConfig.animatedAvatar ?? defaultAnimatedImageConfig,
+		userBanner: inputMediaConfig.userBanner ?? defaultImageConfig,
+		animatedUserBanner: inputMediaConfig.animatedUserBanner ?? defaultAnimatedImageConfig,
 		serverIcon: inputMediaConfig.serverIcon ?? defaultImageConfig,
 		animatedServerIcon: inputMediaConfig.animatedServerIcon ?? defaultAnimatedImageConfig,
 		serverSplash: inputMediaConfig.serverSplash ?? defaultImageConfig,

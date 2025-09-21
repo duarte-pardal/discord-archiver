@@ -6,7 +6,7 @@ process.on("uncaughtExceptionMonitor", () => {
 });
 
 import * as DT from "../discord-api/types.js";
-import { AddSnapshotResult, getDatabaseConnection, RequestType } from "../db/index.js";
+import { AddGuildMemberSnapshotRequest, AddSnapshotResult, getDatabaseConnection, RequestType, Timing } from "../db/index.js";
 import { GatewayConnection } from "../discord-api/gateway/connection.js";
 import { apiReq, RequestResult } from "../discord-api/rest.js";
 import { computeChannelPermissions, computeGuildPermissions } from "./permissions.js";
@@ -613,6 +613,38 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 	}
 
 
+	async function archiveMemberSnapshots(cachedGuild: CachedGuild, members: DT.GuildMember[], timing: Timing, abortSignal: AbortSignal) {
+		const files: DownloadArguments[] = [];
+		for (const member of members) {
+			if (cachedGuild.options.downloadAllMemberAvatars) {
+				if (member.user.avatar != null) {
+					const iconURL = getCDNHashURL(`/avatars/${member.user.id}`, member.user.avatar, config.mediaConfig.avatar, config.mediaConfig.animatedAvatar);
+					files.push({ url: iconURL, downloadURL: iconURL });
+				}
+				if (member.avatar != null) {
+					const iconURL = getCDNHashURL(`/guilds/${cachedGuild.id}/users/${member.user.id}/avatars`, member.avatar, config.mediaConfig.avatar, config.mediaConfig.animatedAvatar);
+					files.push({ url: iconURL, downloadURL: iconURL });
+				}
+				if (member.banner != null) {
+					const iconURL = getCDNHashURL(`/guilds/${cachedGuild.id}/users/${member.user.id}/banners`, member.banner, config.mediaConfig.userBanner, config.mediaConfig.userBanner);
+					files.push({ url: iconURL, downloadURL: iconURL });
+				}
+			}
+		}
+
+		await doDownloadTransaction(abortSignal, files, async () => {
+			for (const member of members) {
+				db.request({
+					type: RequestType.AddGuildMemberSnapshot,
+					member,
+					guildID: cachedGuild.id,
+					timing,
+				} satisfies AddGuildMemberSnapshotRequest);
+			}
+		});
+	}
+
+
 	// GATEWAY
 
 	function updateGuildPermissions(guild: CachedGuild) {
@@ -726,7 +758,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 
 	function syncAllGuildMembers(account: Account, cachedGuild: CachedGuild) {
 		if (!cachedGuild.options.requestAllMembers) return;
-		log.verbose?.(`Requesting all guild members from ${cachedGuild.name} (${cachedGuild.id}) using ${account.name}.`);
+		log.verbose?.(`Started syncing guild members from ${cachedGuild.name} (${cachedGuild.id}) using ${account.name}.`);
 		cachedGuild.memberUserIDs = new Set();
 		account.ongoingMemberRequests.add(cachedGuild.id);
 		account.numberOfOngoingGatewayOperations++;
@@ -1126,7 +1158,10 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 								cachedGuild.memberUserIDs.add(BigInt(member.user.id));
 							}
 							if (isLast) {
-								log.verbose?.(`Finished requesting guild members from ${cachedGuild.name} (${cachedGuild.id}) using ${account.name}.`);
+								log.verbose?.(`Finished syncing guild members from ${cachedGuild.name} (${cachedGuild.id}) using ${account.name}.`);
+								account.ongoingMemberRequests.delete(payload.d.guild_id);
+								account.numberOfOngoingGatewayOperations--;
+
 								db.transaction(async () => {
 									db.request({
 										type: RequestType.SyncGuildMembers,
@@ -1140,46 +1175,9 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 								});
 							}
 
-							const files: DownloadArguments[] = [];
-							if (cachedGuild.options.downloadAllMemberAvatars) {
-								for (const { user } of payload.d.members) {
-									if (user.avatar != null) {
-										const iconURL = getCDNHashURL(`/avatars/${user.id}`, user.avatar, config.mediaConfig.avatar, config.mediaConfig.animatedAvatar);
-										files.push({ url: iconURL, downloadURL: iconURL });
-									}
-								}
-							}
-
-							if (isLast) {
-								account.ongoingMemberRequests.delete(payload.d.guild_id);
-								account.numberOfOngoingGatewayOperations--;
-							}
-
-							if (cachedGuild.options.storeServerEdits) {
+							if (cachedGuild.options.storeMemberEvents) {
 								await cachedGuild.initialSyncPromise;
-								await doDownloadTransaction(abortController.signal, files, async () => {
-									for (const member of payload.d.members) {
-										db.request({
-											type: RequestType.AddUserSnapshot,
-											user: member.user,
-											timing: {
-												timestamp,
-												realtime: false,
-											},
-										});
-										db.request({
-											type: RequestType.AddMemberSnapshot,
-											partial: false,
-											member,
-											guildID: payload.d.guild_id,
-											userID: member.user.id,
-											timing: {
-												timestamp,
-												realtime: false,
-											},
-										});
-									}
-								});
+								await archiveMemberSnapshots(cachedGuild, payload.d.members, timing, abortController.signal);
 							}
 							break;
 						}
@@ -1191,16 +1189,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 
 							if (cachedGuild.options.storeMemberEvents) {
 								await cachedGuild.initialSyncPromise;
-								await db.transaction(async () => {
-									db.request({
-										type: RequestType.AddMemberSnapshot,
-										partial: false,
-										member,
-										guildID: member.guild_id,
-										userID: member.user.id,
-										timing,
-									});
-								});
+								archiveMemberSnapshots(cachedGuild, [member], timing, abortController.signal);
 							}
 							break;
 						}
@@ -1223,22 +1212,9 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 								}
 							}
 
-							// It seems like the API always returns a full member, but it's better to check.
-							// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-							if (member.joined_at == null) {
-								log.warning?.("`joined_at` is missing on a guild member update event. This snapshot won't be recorded.");
-							} else if (cachedGuild.options.storeMemberEvents) {
+							if (cachedGuild.options.storeMemberEvents) {
 								await cachedGuild.initialSyncPromise;
-								await db.transaction(async () => {
-									db.request({
-										type: RequestType.AddMemberSnapshot,
-										partial: false,
-										member,
-										guildID: member.guild_id,
-										userID: member.user.id,
-										timing,
-									});
-								});
+								await archiveMemberSnapshots(cachedGuild, [member], timing, abortController.signal);
 							}
 							break;
 						}
@@ -1251,7 +1227,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 								await cachedGuild.initialSyncPromise;
 								await db.transaction(async () => {
 									db.request({
-										type: RequestType.AddMemberLeave,
+										type: RequestType.AddGuildMemberLeave,
 										guildID: member.guild_id,
 										userID: member.user.id,
 										timing,
@@ -1480,9 +1456,18 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 							}
 							break;
 						}
-						case "MESSAGE_REACTION_ADD_MANY": {
-							// TODO for user account support
-							log.warning?.("Received a MESSAGE_REACTION_ADD_MANY gateway event: %o", payload.d);
+
+						// This event is dispatched instead of GUILD_MEMBER_UPDATE for changes to `deaf` and `mute`.
+						case "VOICE_STATE_UPDATE": {
+							if (payload.d.guild_id == null || payload.d.member == null) break;
+							const member = payload.d.member;
+							const cachedGuild = getGuild(payload.d.guild_id, payload.t);
+							if (cachedGuild === undefined) break;
+
+							if (cachedGuild.options.storeMemberEvents) {
+								await cachedGuild.initialSyncPromise;
+								await archiveMemberSnapshots(cachedGuild, [member], timing, abortController.signal);
+							}
 							break;
 						}
 					}

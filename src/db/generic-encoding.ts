@@ -25,7 +25,7 @@ type InputObjectType = {
 	[ObjectType.User]: DT.PartialUser | DT.PartialUserWithMemberField | DT.User;
 	[ObjectType.Guild]: DT.Guild | DT.GatewayGuildCreateDispatchPayload["d"];
 	[ObjectType.Role]: DT.Role;
-	[ObjectType.Member]: DT.GuildMember;
+	[ObjectType.Member]: DT.GuildMember | DT.GatewayGuildMemberAddDispatchPayload["d"];
 	[ObjectType.Channel]: DT.DirectChannel | DT.GuildChannel | DT.GatewayChannelCreateDispatchPayload["d"];
 	[ObjectType.Thread]: DT.Thread;
 	[ObjectType.Message]: DT.Message | DT.GatewayMessageCreateDispatchPayload["d"];
@@ -94,19 +94,39 @@ const schemas: { [OT in ObjectType]: Schema<InputObjectType[OT]> } = {
 		["discriminator", "ignore"], // custom encoding
 		["global_name", ValueType.String, NullValue.Null],
 		["avatar", ValueType.ImageHash, NullValue.Null],
-		["avatar_decoration_data", "ignore"], // not archived
-		["collectibles", "ignore"], // not archived
-		["display_name_styles", "ignore"], // not archived
-		["clan", "ignore"], // not archived
-		["primary_guild", "ignore"], // not archived
-		["linked_users", "ignore"], // not archived
+		["avatar_decoration_data", [
+			["asset", ValueType.ImageHash],
+			["sku_id", ValueType.BigInteger],
+			["expires_at", ValueType.Integer, NullValue.Null],
+		], NullValue.Null],
+		["collectibles", [
+			["nameplate", [
+				["asset", ValueType.String],
+				["sku_id", ValueType.BigInteger],
+				["label", ValueType.String],
+				["palette", ValueType.String],
+				["expires_at", ValueType.Integer, NullValue.Null],
+			], NullValue.Null],
+		], NullValue.Null],
+		["display_name_styles", [
+			["font_id", ValueType.Integer],
+			["effect_id", ValueType.Integer],
+			["colors", ValueType.JSON],
+		], NullValue.Null],
+		["clan", "ignore"], // not archived (deprecated)
+		["primary_guild", [
+			["identity_guild_id", ValueType.BigInteger, NullValue.Null],
+			["identity_enabled", ValueType.Boolean, NullValue.Null],
+			["tag", ValueType.String, NullValue.Null],
+			["badge", ValueType.ImageHash, NullValue.Null],
+		], NullValue.Null],
 		["bot", ValueType.StrictBoolean],
 		["system", ValueType.StrictBoolean],
-		["pronouns", "ignore"], // not archived
-		["bio", "ignore"], // not archived
-		["banner", "ignore"], // not archived
-		["banner_color", "ignore"], // not archived
-		["accent_color", "ignore"], // not archived
+		["pronouns", "ignore"], // not archived (doesn't appear in partial user objects)
+		["bio", "ignore"], // not archived (doesn't appear in partial user objects)
+		["banner", "ignore"], // not archived (doesn't appear in partial user objects)
+		["banner_color", "ignore"], // not archived (doesn't appear in partial user objects)
+		["accent_color", "ignore"], // not archived (doesn't appear in partial user objects)
 		["flags", "ignore"], // not archived (should be equal to public_flags)
 		["public_flags", ValueType.Integer, NullValue.Absent],
 		["display_name", "ignore"], // not archived (undocumented)
@@ -224,16 +244,34 @@ const schemas: { [OT in ObjectType]: Schema<InputObjectType[OT]> } = {
 		["user", "ignore"], // archived separately
 		["nick", ValueType.String, NullValue.Null],
 		["avatar", ValueType.ImageHash, NullValue.Null],
-		["banner", "ignore"], // not archived
+		["avatar_decoration_data", [
+			["asset", ValueType.ImageHash],
+			["sku_id", ValueType.BigInteger],
+			["expires_at", ValueType.Integer, NullValue.Null],
+		], NullValue.Null],
+		["collectibles", [
+			["nameplate", [
+				["asset", ValueType.String],
+				["sku_id", ValueType.BigInteger],
+				["label", ValueType.String],
+				["palette", ValueType.String],
+				["expires_at", ValueType.Integer, NullValue.Null],
+			], NullValue.Null],
+		], NullValue.Null],
+		["banner", ValueType.ImageHash, NullValue.Null],
 		["roles", ValueType.BigIntegerArray],
 		["joined_at", ValueType.Timestamp],
 		["premium_since", ValueType.Timestamp, NullValue.Null],
-		["deaf", "ignore"], // not archived
-		["mute", "ignore"], // not archived
+		["deaf", ValueType.Boolean, NullValue.Absent],
+		["mute", ValueType.Boolean, NullValue.Absent],
 		["flags", ValueType.Integer],
 		["pending", ValueType.StrictBoolean],
 		["communication_disabled_until", ValueType.Timestamp, NullValue.Null],
 		["unusual_dm_activity_until", "ignore"], // not archived
+
+		["guild_id", "ignore"], // specified separately in the add snapshot request
+
+		["collectibles", "ignore"],
 	],
 	[ObjectType.Channel]: [
 		// What the SQL `NULL` value should mean depends on the channel type. Currently, we always decode those to `null`. Namely:
@@ -289,7 +327,7 @@ const schemas: { [OT in ObjectType]: Schema<InputObjectType[OT]> } = {
 		["name", ValueType.String, NullValue.Null],
 		["last_message_id", "ignore"], // not archived
 		["rate_limit_per_user", ValueType.Integer],
-		["owner_id", ValueType.BigInteger], // TODO: figure out whether this is constant
+		["owner_id", ValueType.BigInteger],
 		["parent_id", ValueType.BigInteger, NullValue.Null],
 		["last_pin_timestamp", "ignore"],
 		["message_count", "ignore"], // not archived
@@ -433,8 +471,6 @@ const processedSchemas = Object.fromEntries(
 		.map(([objectType, schema]) => [objectType, processSchema(schema)]),
 );
 
-// TODO: Avatar decoration hashes (v2_*)
-// It is unknown if there will be a v3, v4, etc. and if the format will stay consistent
 const IMAGE_HASH_REGEX = /^(a_)?([0-9a-f]{32})$/;
 export function encodeImageHash(hash: string): Uint8Array | string {
 	if (typeof hash !== "string")
@@ -705,7 +741,7 @@ function decodeObjectRecursive(objectType: ObjectType, schema: ProcessedSchema, 
 				}
 				decodedValue = decodeValue(type, nullValue, storedValue);
 			} catch (err) {
-				throw new TypeError(`Cannot decode ${prefix}${key} as ${ValueType[type]}. Stored value: ${sqlResult[key]}.${err instanceof Error ? ` Error: ${err.message}` : ""}`);
+				throw new TypeError(`Cannot decode ${ObjectType[objectType]}.${prefix}${key} as ${ValueType[type]}. Stored value: ${sqlResult[key]}.${err instanceof Error ? ` Error: ${err.message}` : ""}`);
 			}
 		} else {
 			// `type` is a `ProcessedSchema`.
@@ -715,7 +751,7 @@ function decodeObjectRecursive(objectType: ObjectType, schema: ProcessedSchema, 
 				try {
 					decodedValue = getNullValue(nullValue);
 				} catch (err) {
-					throw new TypeError(`Cannot decode ${prefix}${key}. ${err instanceof Error ? ` Error: ${err.message}` : ""}`);
+					throw new TypeError(`Cannot decode ${ObjectType[objectType]}.${prefix}${key}__*.${err instanceof Error ? ` Error: ${err.message}` : ""}`);
 				}
 			}
 		}

@@ -1,8 +1,8 @@
 import test, { TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { getRequestHandler, RequestHandler } from "./request-handler.js";
-import { GetChannelsRequest, GetForumTagsRequest, GetGuildEmojisRequest, GetGuildsRequest, GetMessagesRequest, GetRolesRequest, GetThreadsRequest, IteratorResponseFor, MarkMessageAsDeletedRequest, RequestType, Timing } from "./types.js";
-import { Attachment, ChannelType, GatewayGuildCreateDispatchPayload, Message, PartialUser, User } from "../discord-api/types.js";
+import { AddGuildMemberSnapshotRequest, AddGuildMemberLeaveRequest, AddSnapshotResult, GetChannelsRequest, GetForumTagsRequest, GetGuildEmojisRequest, GetGuildMembersRequest, GetGuildsRequest, GetMessagesRequest, GetRolesRequest, GetThreadsRequest, IteratorResponseFor, MarkMessageAsDeletedRequest, RequestType, SyncGuildMembersRequest, Timing } from "./types.js";
+import { Attachment, ChannelType, GatewayGuildCreateDispatchPayload, GuildMember, MemberFlag, Message, User } from "../discord-api/types.js";
 import { parseArgs } from "node:util";
 import { unlinkSync } from "node:fs";
 import { Logger } from "../util/log.js";
@@ -512,7 +512,8 @@ const guild: RecursiveExtension<GatewayGuildCreateDispatchPayload["d"]> = {
 	system_channel_id: "1367557310872031334",
 };
 
-const users: RecursiveExtension<PartialUser>[] = [
+// User objects as returned in the author field of messages.
+const users: RecursiveExtension<Message["author"]>[] = [
 	{
 		id: "1367556342314827907",
 		username: "archivertestserverowner_33925",
@@ -546,6 +547,145 @@ const users: RecursiveExtension<PartialUser>[] = [
 		banner_color: null,
 		clan: null,
 		primary_guild: null,
+	},
+];
+
+
+type GuildMemberEntry = {
+	options: TestOptions;
+	data: RecursiveExtension<Omit<GuildMember, "deaf" | "mute">>;
+};
+const guildMembers: GuildMemberEntry[] = [
+	{
+		options: { name: "simple member" },
+		data: {
+			avatar: null,
+			banner: null,
+			communication_disabled_until: null,
+			deaf: false,
+			flags: 0,
+			joined_at: "2025-05-01T17:44:30.825000+00:00",
+			mute: false,
+			nick: null,
+			pending: false,
+			premium_since: null,
+			roles: [],
+			user: {
+				avatar: null,
+				avatar_decoration_data: null,
+				bot: false,
+				collectibles: null,
+				discriminator: "0",
+				display_name: "Archiver Test Server Owner",
+				display_name_styles: null,
+				global_name: "Archiver Test Server Owner",
+				id: "1367556342314827907",
+				primary_guild: null,
+				public_flags: 0,
+				username: "archivertestserverowner_33925",
+			},
+		},
+	},
+	{
+		options: { name: "pending member" },
+		data: {
+			avatar: null,
+			banner: null,
+			communication_disabled_until: null,
+			deaf: false,
+			flags: 1,
+			joined_at: "2025-05-01T17:44:30.825000+00:00",
+			mute: false,
+			nick: null,
+			pending: true,
+			premium_since: null,
+			roles: [],
+			user: {
+				avatar: null,
+				avatar_decoration_data: null,
+				bot: false,
+				collectibles: null,
+				discriminator: "0",
+				display_name: "Fake user 4",
+				display_name_styles: null,
+				global_name: "Fake user 4",
+				id: "2000000000000000004",
+				primary_guild: null,
+				public_flags: 0,
+				username: "fake user 4",
+			},
+		},
+	},
+	{
+		options: { name: "member without the `deaf` and `mute` properties" },
+		data: {
+			avatar: null,
+			banner: null,
+			communication_disabled_until: null,
+			flags: 0,
+			joined_at: "2025-05-02T00:00:00.000000+00:00",
+			nick: null,
+			pending: false,
+			premium_since: null,
+			roles: [],
+			user: {
+				avatar: null,
+				avatar_decoration_data: null,
+				bot: false,
+				collectibles: null,
+				discriminator: "0",
+				display_name: "Fake user 3",
+				display_name_styles: null,
+				global_name: "Fake user 3",
+				id: "2000000000000000003",
+				primary_guild: null,
+				public_flags: 0,
+				username: "fake user 3",
+			},
+		},
+	},
+	{
+		options: { name: "fake member with unknown properties" },
+		data: {
+			avatar: "00000000000000000000000000000000",
+			banner: "11111111111111111111111111111111",
+			communication_disabled_until: null,
+			deaf: false,
+			flags: 522 as MemberFlag,
+			joined_at: "2023-01-01T12:34:56.789000+00:00",
+			mute: true,
+			nick: "name",
+			pending: false,
+			premium_since: "2023-02-01T12:34:56.789000+00:00",
+			roles: [
+				"1367558991449817190",
+			],
+			user: {
+				avatar: "22222222222222222222222222222222",
+				avatar_decoration_data: null,
+				bot: false,
+				collectibles: null,
+				discriminator: "0",
+				display_name: "User who boosted the server",
+				display_name_styles: null,
+				global_name: "User who boosted the server",
+				id: "2000000000000000002",
+				primary_guild: null,
+				public_flags: 64,
+				username: "fake user 2",
+			},
+			123: "abc",
+			collectibles: {
+				nameplate: {
+					sku_id: "1349849614198505602",
+					asset: "nameplates/nameplates/twilight/",
+					label: "COLLECTIBLES_NAMEPLATES_TWILIGHT_A11Y",
+					palette: "cobalt",
+					"huh?": false,
+				},
+				unknown_collectible: {},
+			},
+		},
 	},
 ];
 
@@ -2435,6 +2575,130 @@ const messages: MessageEntry[] = [
 			},
 		},
 	},
+	{
+		options: { name: "message from user with decorations" },
+		data: {
+			type: 0,
+			content: "Look at my bling!",
+			mentions: [],
+			mention_roles: [],
+			attachments: [],
+			embeds: [],
+			timestamp: "2030-04-06T03:18:49.785000+00:00",
+			edited_timestamp: null,
+			flags: 0,
+			components: [],
+			id: "2020000000000000000",
+			channel_id: "1367557310872031334",
+			author: {
+				id: "2000000000000000000",
+				username: "fake user 0",
+				avatar: "00000000000000000000000000000000",
+				discriminator: "0",
+				public_flags: 4194560,
+				flags: 4194560,
+				banner: null,
+				accent_color: null,
+				global_name: "User with fancy decorations",
+				avatar_decoration_data: {
+					asset: "a_44d96dca4f514777925f23d841f36fac",
+					sku_id: "1349486948942745695",
+					expires_at: null,
+				},
+				collectibles: {
+					nameplate: {
+						sku_id: "1349849614198505602",
+						asset: "nameplates/nameplates/twilight/",
+						label: "COLLECTIBLES_NAMEPLATES_TWILIGHT_A11Y",
+						palette: "cobalt",
+					},
+				},
+				display_name_styles: {
+					font_id: 3,
+					effect_id: 2,
+					colors: [
+						1234567,
+						7654321,
+					],
+				},
+				banner_color: null,
+				clan: {
+					identity_guild_id: "2010000000000000000",
+					identity_enabled: true,
+					tag: "FAKE",
+					badge: "00000000000000000000000000000000",
+				},
+				primary_guild: {
+					identity_guild_id: "2010000000000000000",
+					identity_enabled: true,
+					tag: "FAKE",
+					badge: "00000000000000000000000000000000",
+				},
+			},
+			pinned: true,
+			mention_everyone: false,
+			tts: false,
+		},
+	},
+	{
+		options: { name: "message from user with unknown properties" },
+		data: {
+			type: 0,
+			content: "Pinned message",
+			mentions: [],
+			mention_roles: [],
+			attachments: [],
+			embeds: [],
+			timestamp: "2030-04-06T03:18:49.785000+00:00",
+			edited_timestamp: "2025-05-01T18:26:17.333000+00:00",
+			flags: 0,
+			components: [],
+			id: "2020000000000000001",
+			channel_id: "1367557310872031334",
+			author: {
+				id: "2000000000000000001",
+				username: "fake user 1",
+				avatar: "00000000000000000000000000000000",
+				discriminator: "0",
+				public_flags: 4194560,
+				flags: 4194560,
+				banner: null,
+				accent_color: null,
+				global_name: "User with unknown properties",
+				avatar_decoration_data: null,
+				collectibles: {
+					nameplate: {
+						sku_id: "1349849614198505602",
+						asset: "nameplates/nameplates/twilight/",
+						label: "COLLECTIBLES_NAMEPLATES_TWILIGHT_A11Y",
+						palette: "cobalt",
+						"what?": true,
+					},
+					unknown_collectible: {},
+				},
+				display_name_styles: null,
+				banner_color: null,
+				clan: {
+					identity_guild_id: null,
+					identity_enabled: null,
+					tag: null,
+					badge: null,
+					unknown_property: 123,
+				},
+				primary_guild: {
+					identity_guild_id: null,
+					identity_enabled: null,
+					tag: null,
+					badge: null,
+					unknown_property: 123,
+				},
+				unknown_property: [],
+			},
+			pinned: true,
+			mention_everyone: false,
+			tts: false,
+		},
+	},
 ];
 
 const messageEdits: {
@@ -2692,51 +2956,59 @@ const guildSnapshotTiming = {
 	realtime: false,
 };
 
-request({
+assert.equal(request({
 	type: RequestType.AddGuildSnapshot,
 	guild: guild,
 	timing: guildSnapshotTiming,
-});
+}), AddSnapshotResult.AddedFirstSnapshot);
 
 for (const emoji of guild.emojis) {
-	request({
+	assert.equal(request({
 		type: RequestType.AddGuildEmojiSnapshot,
 		emoji,
 		guildID: guild.id,
 		timing: guildSnapshotTiming,
-	});
+	}), AddSnapshotResult.AddedFirstSnapshot);
 }
 
 for (const role of guild.roles) {
-	request({
+	assert.equal(request({
 		type: RequestType.AddRoleSnapshot,
 		role,
 		guildID: guild.id,
 		timing: guildSnapshotTiming,
-	});
+	}), AddSnapshotResult.AddedFirstSnapshot);
 }
-
+for (const { data: member } of guildMembers) {
+	assert.equal(request({
+		type: RequestType.AddGuildMemberSnapshot,
+		member,
+		partial: false,
+		timing: guildSnapshotTiming,
+		guildID: guild.id,
+	}), AddSnapshotResult.AddedFirstSnapshot);
+}
 for (const channel of guild.channels) {
-	request({
+	assert.equal(request({
 		type: RequestType.AddChannelSnapshot,
 		channel: Object.assign(channel, { guild_id: guild.id }),
 		timing: guildSnapshotTiming,
-	});
+	}), AddSnapshotResult.AddedFirstSnapshot);
 }
 for (const thread of guild.threads) {
-	request({
+	assert.equal(request({
 		type: RequestType.AddThreadSnapshot,
 		thread: Object.assign(thread, { guild_id: guild.id }),
 		timing: guildSnapshotTiming,
-	});
+	}), AddSnapshotResult.AddedFirstSnapshot);
 }
 
-for (const entry of messages) {
-	request({
+for (const { data: message } of messages) {
+	assert.equal(request({
 		type: RequestType.AddMessageSnapshot,
-		message: entry.data,
+		message,
 		timestamp: guildSnapshotTiming.timestamp,
-	});
+	}), AddSnapshotResult.AddedFirstSnapshot);
 }
 
 function stripGuild(guild: Partial<GatewayGuildCreateDispatchPayload["d"]>) {
@@ -2784,22 +3056,29 @@ function stripGuild(guild: Partial<GatewayGuildCreateDispatchPayload["d"]>) {
 
 	return guild;
 }
+function stripGuildMember(member: Partial<GuildMember>) {
+	member.joined_at = new Date(member.joined_at!).toISOString();
+	if (member.premium_since != null) {
+		member.premium_since = new Date(member.premium_since).toISOString();
+	}
+
+	stripUser(member.user!);
+
+	return member;
+}
 function stripUser(user: Partial<User>) {
 	user.bot ??= false;
 	user.system ??= false;
-	delete user.collectibles;
 
-	// TODO for user profile
 	delete user.accent_color;
-	delete user.avatar_decoration_data;
 	delete user.banner;
 	delete user.banner_color;
-	delete user.display_name_styles;
-
-	// TODO for clan support
-	// eslint-disable-next-line @typescript-eslint/no-deprecated
-	delete user.clan;
-	delete user.primary_guild;
+	if (user.flags == null) {
+		user.flags = user.public_flags!;
+	} else if (user.flags !== user.public_flags) {
+		throw new Error("The member flags are not equal to the public flags");
+	}
+	delete user.display_name;
 
 	return user;
 }
@@ -2901,7 +3180,7 @@ for (const emoji of guild.emojis) {
 }
 
 
-async function compareLatestSnapshots<R extends GetGuildsRequest | GetChannelsRequest | GetThreadsRequest | GetMessagesRequest | GetRolesRequest | GetForumTagsRequest | GetGuildEmojisRequest, T>(
+async function compareLatestSnapshots<R extends GetGuildsRequest | GetGuildMembersRequest | GetChannelsRequest | GetThreadsRequest | GetMessagesRequest | GetRolesRequest | GetForumTagsRequest | GetGuildEmojisRequest, T>(
 	t: TestContext,
 	req: R,
 	entries: Iterable<T>,
@@ -2947,6 +3226,20 @@ await Promise.all([
 			return { expectedObject: stripGuild(structuredClone(original)), snapshot };
 		},
 		_ => ({ name: "community server" }),
+	)),
+	test("latest member snapshots match", (t) => compareLatestSnapshots(
+		t,
+		{
+			type: RequestType.GetGuildMembers,
+			guildID: guild.id,
+		},
+		guildMembers,
+		async (original, snapshots) => {
+			const snapshot = snapshots.find(s => s.data.user.id === original.data.user.id);
+			assert(snapshot !== undefined, "guild member wasn't archived");
+			return { expectedObject: stripGuildMember(structuredClone(original.data)), snapshot };
+		},
+		entry => entry.options,
 	)),
 	test("latest channel snapshots match", (t) => compareLatestSnapshots(
 		t,
@@ -3096,13 +3389,13 @@ await Promise.all([
 ]);
 
 
-test("previous message snapshots match", async (t) => {
+await test("previous message snapshots match", async (t) => {
 	for (const entry of messageEdits) {
-		request({
+		assert.equal(request({
 			type: RequestType.AddMessageSnapshot,
 			message: entry.data,
 			timestamp: entry.timestamp,
-		});
+		}), AddSnapshotResult.AddedAnotherSnapshot);
 
 		stripMessage(entry.data);
 	}
@@ -3149,7 +3442,7 @@ test("previous message snapshots match", async (t) => {
 	}
 });
 
-test("no messages have been marked as deleted", () => {
+await test("no messages have been marked as deleted", () => {
 	assert.equal(
 		[...request({
 			type: RequestType.GetMessages,
@@ -3161,7 +3454,7 @@ test("no messages have been marked as deleted", () => {
 	);
 });
 
-test("messages can be marked as deleted", async () => {
+await test("messages can be marked as deleted", () => {
 	const deletedEntries = messages
 		.filter((entry): entry is MessageEntry & { deletedTiming: Timing } => entry.deletedTiming != null);
 	for (const entry of deletedEntries) {
@@ -3180,4 +3473,240 @@ test("messages can be marked as deleted", async () => {
 			deletedEntries.find(entry => entry.data.id === snapshot.data.id)?.deletedTiming ?? null,
 		);
 	}
+});
+
+
+await test("guild member syncs work", () => {
+	const syncTimestamp = new Date("2025-09-17T00:00:00Z").getTime();
+
+	request({
+		type: RequestType.SyncGuildMembers,
+		guildID: BigInt(guild.id),
+		userIDs: new Set([2000000000000000002n, 2000000000000000003n]),
+		timing: {
+			timestamp: syncTimestamp,
+			realtime: false,
+		},
+	} satisfies SyncGuildMembersRequest);
+
+	const snapshots = [...request({
+		type: RequestType.GetGuildMembers,
+		guildID: guild.id,
+		timestamp: syncTimestamp,
+	} satisfies GetGuildMembersRequest)];
+	assert.equal(snapshots.length, guildMembers.length);
+	for (const snapshot of snapshots) {
+		assert.deepEqual(
+			snapshot.deletedTiming,
+			["2000000000000000002", "2000000000000000003"].includes(snapshot.data.user.id) ?
+				null :
+				{
+					timestamp: syncTimestamp,
+					realtime: false,
+				},
+		);
+	}
+});
+
+function testMemberLeave(expectedResult: AddSnapshotResult) {
+	const timing = {
+		timestamp: new Date("2025-09-17T01:00:00Z").getTime(),
+		realtime: true,
+	};
+
+	assert.equal(
+		request({
+			type: RequestType.AddGuildMemberLeave,
+			guildID: guild.id,
+			userID: "2000000000000000002",
+			timing,
+		} satisfies AddGuildMemberLeaveRequest),
+		expectedResult,
+	);
+
+	const snapshots = [...request({
+		type: RequestType.GetGuildMembers,
+		guildID: guild.id,
+		timestamp: timing.timestamp,
+	} satisfies GetGuildMembersRequest)];
+	assert.equal(snapshots.length, guildMembers.length);
+	assert.deepEqual(
+		snapshots.find(s => s.data.user.id === "2000000000000000002")!.deletedTiming,
+		timing,
+	);
+}
+await test("guild member leaves are saved", () => {
+	testMemberLeave(AddSnapshotResult.AddedAnotherSnapshot);
+});
+await test("guild member leaves are idempotent", () => {
+	testMemberLeave(AddSnapshotResult.SameAsLatest);
+});
+
+function testMemberJoin(expectedResult: AddSnapshotResult) {
+	const timing = {
+		timestamp: new Date("2025-09-17T02:00:00Z").getTime(),
+		realtime: true,
+	};
+	const member = guildMembers.find(e => e.data.user.id === "2000000000000000002")!.data;
+
+	assert.equal(
+		request({
+			type: RequestType.AddGuildMemberSnapshot,
+			guildID: guild.id,
+			member,
+			timing,
+		} satisfies AddGuildMemberSnapshotRequest),
+		expectedResult,
+	);
+
+	const snapshots = [...request({
+		type: RequestType.GetGuildMembers,
+		guildID: guild.id,
+		timestamp: timing.timestamp,
+	} satisfies GetGuildMembersRequest)];
+	assert.equal(snapshots.length, guildMembers.length);
+	assertEqual({
+		actual: snapshots.find(s => s.data.user.id === "2000000000000000002"),
+		expected: {
+			timing,
+			deletedTiming: null,
+			data: stripGuildMember(structuredClone(member)),
+		},
+	});
+}
+await test("guild member joins are saved", () => {
+	testMemberJoin(AddSnapshotResult.AddedAnotherSnapshot);
+});
+await test("guild member joins are idempotent", () => {
+	testMemberJoin(AddSnapshotResult.SameAsLatest);
+});
+
+await test("guild member updates don't change the `deaf` and `mute` properties", () => {
+	const timing = {
+		timestamp: new Date("2025-09-17T03:00:00Z").getTime(),
+		realtime: true,
+	};
+
+	const memberWithout: Omit<GuildMember, "deaf" | "mute"> = {
+		flags: 0,
+		joined_at: "2025-05-01T17:44:30.825000+00:00",
+		nick: null,
+		pending: false,
+		roles: [],
+		user: {
+			avatar: null,
+			avatar_decoration_data: null,
+			bot: false,
+			collectibles: null,
+			discriminator: "0",
+			display_name: "Fake user",
+			display_name_styles: null,
+			global_name: "Fake user",
+			id: "2000000000000001000",
+			primary_guild: null,
+			public_flags: 0,
+			username: "fake user",
+		},
+	};
+	const memberWith: Omit<GuildMember, "deaf" | "mute"> & Partial<GuildMember> = structuredClone(memberWithout);
+	memberWith.deaf = true;
+	memberWith.mute = false;
+	memberWith.user.id = "2000000000000001001";
+
+	function assertSnapshotsEqual(
+		snapshot: IteratorResponseFor<GetGuildMembersRequest>,
+		member: Omit<GuildMember, "deaf" | "mute"> & Partial<GuildMember>,
+	) {
+		assertEqual({
+			actual: snapshot,
+			expected: {
+				timing,
+				deletedTiming: null,
+				data: stripGuildMember(structuredClone(member)),
+			},
+		});
+	}
+	function checkSnapshots() {
+		const snapshots = [...request({
+			type: RequestType.GetGuildMembers,
+			guildID: guild.id,
+			timestamp: timing.timestamp,
+		} satisfies GetGuildMembersRequest)];
+		assert.equal(snapshots.length, guildMembers.length + 2);
+
+		const snapshotWithout = snapshots.find(s => s.data.user.id === memberWithout.user.id)!;
+		const snapshotWith = snapshots.find(s => s.data.user.id === memberWith.user.id)!;
+		assert.equal(snapshotWithout.deletedTiming, null);
+		assert(!("deaf" in snapshotWithout.data));
+		assert(!("mute" in snapshotWithout.data));
+		assert.equal(snapshotWith.deletedTiming, null);
+		assert.equal(snapshotWith.data.deaf, true);
+		assert.equal(snapshotWith.data.mute, false);
+
+		assertSnapshotsEqual(snapshotWithout, memberWithout);
+		assertSnapshotsEqual(snapshotWith, memberWith);
+	}
+
+
+	for (const member of [memberWithout, memberWith]) {
+		assert.equal(
+			request({
+				type: RequestType.AddGuildMemberSnapshot,
+				guildID: guild.id,
+				member,
+				timing,
+			} satisfies AddGuildMemberSnapshotRequest),
+			AddSnapshotResult.AddedFirstSnapshot,
+		);
+	}
+
+	checkSnapshots();
+
+
+	timing.timestamp = new Date("2025-09-17T04:00:00Z").getTime();
+	delete memberWith.deaf;
+	delete memberWith.mute;
+	memberWithout.nick = "updated";
+	memberWith.nick = "updated";
+	for (const member of [memberWithout, memberWith]) {
+		assert.equal(
+			request({
+				type: RequestType.AddGuildMemberSnapshot,
+				guildID: guild.id,
+				member,
+				timing,
+			} satisfies AddGuildMemberSnapshotRequest),
+			AddSnapshotResult.AddedAnotherSnapshot,
+		);
+	}
+
+	memberWith.deaf = true;
+	memberWith.mute = false;
+	checkSnapshots();
+});
+
+await test("guild members with missing mandatory properties are rejected", () => {
+	assert.throws(
+		() => request({
+			type: RequestType.AddGuildMemberSnapshot,
+			guildID: guild.id,
+			member: {
+				// missing `flags`
+				joined_at: "2025-05-01T17:44:30.825000+00:00",
+				nick: null,
+				pending: false,
+				roles: [],
+				user: guildMembers[0].data.user,
+			} as any,
+			timing: {
+				timestamp: new Date("2025-09-17T04:00:00Z").getTime(),
+				realtime: false,
+			},
+		} satisfies AddGuildMemberSnapshotRequest),
+		TypeError,
+	);
+});
+
+requestHandler({
+	type: RequestType.Close,
 });

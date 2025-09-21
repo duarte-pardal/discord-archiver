@@ -32,8 +32,21 @@ CREATE TABLE latest_user_snapshots (
 	discriminator TEXT, -- the user's 4-digit discord-tag, NULL if the user has none (represented as "0" in the API)
 	global_name TEXT, -- the user's display name, if it is set. For bots, this is the application name
 	avatar BLOB, -- the user's avatar hash
-	-- avatar_decoration BLOB, -- the user's avatar decoration hash
-	-- banner BLOB, -- the user's banner hash
+	avatar_decoration_data__asset BLOB, -- the avatar decoration hash
+	avatar_decoration_data__sku_id INTEGER, -- ID of the avatar decoration's SKU
+	avatar_decoration_data__expires_at INTEGER, -- Unix timestamp of when the current avatar decoration expires
+	collectibles__nameplate__asset STRING, -- the nameplate asset path
+	collectibles__nameplate__sku_id INTEGER, -- the ID of the nameplate's SKU
+	collectibles__nameplate__label STRING, -- the nameplate's accessibility description
+	collectibles__nameplate__palette STRING, -- the nameplate's color palette
+	collectibles__nameplate__expires_at INTEGER, -- Unix timestamp of when the current nameplate expires
+	display_name_styles__font_id INTEGER, -- the font to use for the user's display name
+	display_name_styles__effect_id INTEGER, -- the effect to use for the user's display name
+	display_name_styles__colors TEXT, -- the colors to use for the user's display name
+	primary_guild__identity_guild_id INTEGER, -- ID of the user's primary guild
+	primary_guild__identity_enabled INTEGER, -- hether the user is displaying the primary guild's server tag
+	primary_guild__tag TEXT, -- the text of the user's server tag
+	primary_guild__badge BLOB, -- the server tag badge hash
 	public_flags INTEGER -- the public flags on a user's account
 );
 CREATE TABLE previous_user_snapshots (
@@ -44,8 +57,21 @@ CREATE TABLE previous_user_snapshots (
 	discriminator TEXT, -- the user's 4-digit discord-tag, NULL if the user has none (represented as "0" in the API)
 	global_name TEXT, -- the user's display name, if it is set. For bots, this is the application name
 	avatar BLOB, -- the user's avatar hash
-	avatar_decoration BLOB, -- the user's avatar decoration hash
-	-- banner BLOB, -- the user's banner hash
+	avatar_decoration_data__asset BLOB, -- the avatar decoration hash
+	avatar_decoration_data__sku_id INTEGER, -- ID of the avatar decoration's SKU
+	avatar_decoration_data__expires_at INTEGER, -- Unix timestamp of when the current avatar decoration expires
+	collectibles__nameplate__asset STRING, -- the nameplate asset path
+	collectibles__nameplate__sku_id INTEGER, -- the ID of the nameplate's SKU
+	collectibles__nameplate__label STRING, -- the nameplate's accessibility description
+	collectibles__nameplate__palette STRING, -- the nameplate's color palette
+	collectibles__nameplate__expires_at INTEGER, -- Unix timestamp of when the current nameplate expires
+	display_name_styles__font_id INTEGER, -- the font to use for the user's display name
+	display_name_styles__effect_id INTEGER, -- the effect to use for the user's display name
+	display_name_styles__colors TEXT, -- the colors to use for the user's display name
+	primary_guild__identity_guild_id INTEGER, -- ID of the user's primary guild
+	primary_guild__identity_enabled INTEGER, -- hether the user is displaying the primary guild's server tag
+	primary_guild__tag TEXT, -- the text of the user's server tag
+	primary_guild__badge BLOB, -- the server tag badge hash
 	public_flags INTEGER, -- the public flags on a user's account
 	PRIMARY KEY (id, _timestamp)
 ) WITHOUT ROWID;
@@ -182,40 +208,33 @@ CREATE TABLE previous_role_snapshots (
 
 
 -- Since members can leave and join again, there's no _deleted column. Instead, when a user leaves
--- a guild, a special snapshot is saved with joined_at set to NULL.
-CREATE TABLE latest_member_snapshots (
-	_user_id INTEGER NOT NULL REFERENCES latest_user_snapshots (id),
+-- a guild, a special snapshot is saved with joined_at set to NULL and all other columns set to
+-- irrelevant values.
+CREATE TABLE member_snapshots (
 	_guild_id INTEGER NOT NULL REFERENCES latest_guild_snapshots (id),
-	---
+	_user_id INTEGER NOT NULL REFERENCES latest_user_snapshots (id),
 	_timestamp INTEGER NOT NULL,
 	_extra TEXT,
 	nick TEXT, -- this user's guild nickname
 	avatar BLOB, -- the member's guild avatar hash
+	avatar_decoration_data__asset BLOB, -- the avatar decoration hash
+	avatar_decoration_data__sku_id INTEGER, -- ID of the avatar decoration's SKU
+	avatar_decoration_data__expires_at INTEGER, -- Unix timestamp of when the current avatar decoration expires
+	collectibles__nameplate__asset STRING, -- the nameplate asset path
+	collectibles__nameplate__sku_id INTEGER, -- the ID of the nameplate's SKU
+	collectibles__nameplate__label STRING, -- the nameplate's accessibility description
+	collectibles__nameplate__palette STRING, -- the nameplate's color palette
+	collectibles__nameplate__expires_at INTEGER, -- Unix timestamp of when the current nameplate expires
+	banner BLOB, -- the member's guild banner hash
 	roles BLOB, -- array of role IDs
 	joined_at INTEGER, -- when the user joined the guild, or NULL if this snapshot indicates that the user left the guild
 	premium_since INTEGER, -- when the user started boosting the guild
-	-- deaf INTEGER, -- whether the user is deafened in voice channels
-	-- mute INTEGER, -- whether the user is muted in voice channels
+	deaf INTEGER, -- whether the user is deafened in voice channels or `NULL` if unknown
+	mute INTEGER, -- whether the user is muted in voice channels or `NULL` if unknown
+	flags INTEGER NOT NULL, -- guild member flags represented as a bit field
 	pending INTEGER NOT NULL, -- whether the user has not yet passed the guild's Membership Screening requirements
 	communication_disabled_until INTEGER, -- when the user's timeout will expire and the user will be able to communicate in the guild again, null or a time in the past if the user is not timed out
-	PRIMARY KEY (_user_id, _guild_id)
-) WITHOUT ROWID;
-CREATE TABLE previous_member_snapshots (
-	_user_id INTEGER NOT NULL, -- the user ID, not present in the Discord object
-	_guild_id INTEGER NOT NULL,
-	_timestamp INTEGER NOT NULL,
-	_extra TEXT,
-	nick TEXT, -- this user's guild nickname
-	avatar BLOB, -- the member's guild avatar hash
-	roles BLOB, -- array of role IDs
-	joined_at INTEGER, -- when the user joined the guild, or NULL if this snapshot indicates that the user left the guild
-	premium_since INTEGER, -- when the user started boosting the guild
-	-- deaf INTEGER, -- whether the user is deafened in voice channels
-	-- mute INTEGER, -- whether the user is muted in voice channels
-	pending INTEGER, -- whether the user has not yet passed the guild's Membership Screening requirements
-	communication_disabled_until INTEGER, -- when the user's timeout will expire and the user will be able to communicate in the guild again, null or a time in the past if the user is not timed out
-	PRIMARY KEY (_user_id, _guild_id, _timestamp),
-	FOREIGN KEY (_user_id, _guild_id) REFERENCES latest_member_snapshots (_user_id, _guild_id)
+	PRIMARY KEY (_guild_id, _user_id, _timestamp)
 ) WITHOUT ROWID;
 
 
@@ -236,7 +255,7 @@ CREATE TABLE latest_channel_snapshots (
 	user_limit INTEGER, -- the user limit of the voice channel
 	rate_limit_per_user INTEGER, -- amount of seconds a user has to wait before sending another message (0-21600); bots, as well as users with the permission manage_messages or manage_channel, are unaffected
 	icon TEXT, -- icon hash of the group DM
-	owner_id INTEGER, -- ID of the creator of the group DM or thread
+	owner_id INTEGER, -- ID of the creator of the group DM
 	-- `application_id` and `managed` are missing because they're not useful
 	parent_id INTEGER, -- for guild channels: ID of the parent category for a channel (each parent category can contain up to 50 channels), for threads: ID of the text channel this thread was created
 	rtc_region TEXT, -- voice region ID for the voice channel, automatic when set to null
@@ -263,7 +282,7 @@ CREATE TABLE previous_channel_snapshots (
 	user_limit INTEGER, -- the user limit of the voice channel
 	rate_limit_per_user INTEGER, -- amount of seconds a user has to wait before sending another message (0-21600); bots, as well as users with the permission manage_messages or manage_channel, are unaffected
 	icon TEXT, -- icon hash of the group DM
-	owner_id INTEGER, -- ID of the creator of the group DM or thread
+	owner_id INTEGER, -- ID of the creator of the group DM
 	-- `application_id` and `managed` are missing because they're not useful
 	parent_id INTEGER, -- for guild channels: ID of the parent category for a channel (each parent category can contain up to 50 channels), for threads: ID of the text channel this thread was created
 	rtc_region TEXT, -- voice region ID for the voice channel, automatic when set to null

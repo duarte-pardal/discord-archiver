@@ -29,8 +29,9 @@ export const enum RequestType {
 	SyncDeletedGuildSubObjects,
 	AddGuildSnapshot,
 	SyncGuildMembers,
-	AddMemberSnapshot,
-	AddMemberLeave,
+	AddGuildMemberSnapshot,
+	AddGuildMemberLeave,
+	GetGuildMembers,
 	AddRoleSnapshot,
 	MarkRoleAsDeleted,
 	GetRoles,
@@ -113,27 +114,22 @@ export type SyncGuildMembersRequest = {
 	guildID: bigint;
 	userIDs: Set<bigint>;
 };
-export type AddMemberSnapshotFromFullRequest = {
-	type: RequestType.AddMemberSnapshot;
-	partial: false;
-	timing: Timing | null;
+export type AddGuildMemberSnapshotRequest = {
+	type: RequestType.AddGuildMemberSnapshot;
+	timing: Timing;
 	guildID: string;
-	userID: string;
-	member: DT.GuildMember;
+	member: Omit<DT.GuildMember, "deaf" | "mute"> & Partial<DT.GuildMember>;
 };
-export type AddMemberSnapshotFromPartialRequest = {
-	type: RequestType.AddMemberSnapshot;
-	partial: true;
-	timing: Timing | null;
-	guildID: string;
-	userID: string;
-	member: Partial<DT.GuildMember>;
-};
-export type AddMemberLeaveRequest = {
-	type: RequestType.AddMemberLeave;
+export type AddGuildMemberLeaveRequest = {
+	type: RequestType.AddGuildMemberLeave;
 	timing: Timing;
 	guildID: string;
 	userID: string;
+};
+export type GetGuildMembersRequest = {
+	type: RequestType.GetGuildMembers;
+	timestamp?: number | null | undefined;
+	guildID: string;
 };
 export type AddChannelSnapshotRequest = {
 	type: RequestType.AddChannelSnapshot;
@@ -288,9 +284,8 @@ export type SingleRequest =
 	AddRoleSnapshotRequest |
 	MarkRoleAsDeletedRequest |
 	SyncGuildMembersRequest |
-	AddMemberSnapshotFromFullRequest |
-	AddMemberSnapshotFromPartialRequest |
-	AddMemberLeaveRequest |
+	AddGuildMemberSnapshotRequest |
+	AddGuildMemberLeaveRequest |
 	AddChannelSnapshotRequest |
 	MarkChannelAsDeletedRequest |
 	AddThreadSnapshotRequest |
@@ -313,6 +308,7 @@ export type SingleRequest =
 export type IteratorRequest =
 	GetGuildsRequest |
 	GetRolesRequest |
+	GetGuildMembersRequest |
 	GetChannelsRequest |
 	GetThreadsRequest |
 	GetForumTagsRequest |
@@ -335,9 +331,8 @@ export type SingleResponseFor<R extends SingleRequest> =
 	R extends AddRoleSnapshotRequest ? AddSnapshotResult :
 	R extends MarkRoleAsDeletedRequest ? boolean :
 	R extends SyncGuildMembersRequest ? void :
-	R extends AddMemberSnapshotFromFullRequest ? AddSnapshotResult :
-	R extends AddMemberSnapshotFromPartialRequest ? AddSnapshotResult :
-	R extends AddMemberLeaveRequest ? AddSnapshotResult :
+	R extends AddGuildMemberSnapshotRequest ? AddSnapshotResult :
+	R extends AddGuildMemberLeaveRequest ? AddSnapshotResult :
 	R extends AddChannelSnapshotRequest ? AddSnapshotResult :
 	R extends MarkChannelAsDeletedRequest ? boolean :
 	R extends AddThreadSnapshotRequest ? AddSnapshotResult :
@@ -358,7 +353,7 @@ export type SingleResponseFor<R extends SingleRequest> =
 	R extends GetLastMessageIDRequest ? bigint | null :
 	never;
 
-export type SnapshotResponse<T> = {
+export type ObjectSnapshotResponse<T> = {
 	/**
 	 * The timing at which the snapshot was taken, or `null` if the snapshot depicts the state of
 	 * the object upon creation.
@@ -372,15 +367,30 @@ export type SnapshotResponse<T> = {
 	data: T;
 };
 
+export type ExistingRelationSnapshotResponse<T> = {
+	timing: Timing;
+	deletedTiming: null;
+	data: T;
+};
+export type DeletedRelationSnapshotResponse<T> = {
+	timing: Timing;
+	deletedTiming: Timing;
+	data: T;
+};
+export type RelationSnapshotResponse<Full, Partial> =
+	ExistingRelationSnapshotResponse<Full> |
+	DeletedRelationSnapshotResponse<Partial>;
+
 export type IteratorResponseFor<R extends IteratorRequest> =
 	R extends GetFilesRequest ? File :
-	R extends GetGuildsRequest ? SnapshotResponse<DT.Guild> :
-	R extends GetRolesRequest ? SnapshotResponse<DT.Role> :
-	R extends GetChannelsRequest ? SnapshotResponse<Omit<DT.DirectChannel | DT.GuildChannel, "available_tags">> :
-	R extends GetThreadsRequest ? SnapshotResponse<DT.Thread> :
-	R extends GetForumTagsRequest ? SnapshotResponse<DT.ForumTag> :
-	R extends GetMessagesRequest ? SnapshotResponse<DT.Message> :
-	R extends GetGuildEmojisRequest ? SnapshotResponse<CustomEmojiData> :
+	R extends GetGuildsRequest ? ObjectSnapshotResponse<DT.Guild> :
+	R extends GetRolesRequest ? ObjectSnapshotResponse<DT.Role> :
+	R extends GetGuildMembersRequest ? RelationSnapshotResponse<DT.GuildMember, Pick<DT.GuildMember, "user">> :
+	R extends GetChannelsRequest ? ObjectSnapshotResponse<Omit<DT.DirectChannel | DT.GuildChannel, "available_tags">> :
+	R extends GetThreadsRequest ? ObjectSnapshotResponse<DT.Thread> :
+	R extends GetForumTagsRequest ? ObjectSnapshotResponse<DT.ForumTag> :
+	R extends GetMessagesRequest ? ObjectSnapshotResponse<DT.Message> :
+	R extends GetGuildEmojisRequest ? ObjectSnapshotResponse<CustomEmojiData> :
 	R extends SearchMessagesRequest ? {
 		_timestamp: bigint;
 		_deleted: bigint | null;

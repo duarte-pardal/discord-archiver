@@ -18,6 +18,8 @@ export type AvatarDecorationData = {
 	asset: string;
 	/** ID of the avatar decoration's SKU */
 	sku_id: string;
+	/** Unix timestamp of when the current avatar decoration expires */
+	expires_at: number | null;
 };
 
 export type PrimaryGuild = {
@@ -39,6 +41,31 @@ export type PrimaryGuild = {
 	badge: string | null;
 };
 
+export type Nameplate = {
+	/** The nameplate asset path */
+	asset: string;
+	/** The ID of the nameplate's SKU */
+	sku_id: string;
+	/** The nameplate's accessibility description */
+	label: string;
+	/** The nameplate's color palette */
+	palette: string;
+	/** Unix timestamp of when the current nameplate expires */
+	expires_at?: number | null;
+};
+export type Collectibles = {
+	nameplate?: Nameplate;
+};
+
+export type DisplayNameStyle = {
+	/** The font to use */
+	font_id: number;
+	/** The effect to use */
+	effect_id: number;
+	/** The colors to use encoded as an array of integers representing hexadecimal color codes */
+	colors: number[];
+};
+
 export type PartialUser = {
 	/** The user's ID */
 	id: string;
@@ -50,7 +77,8 @@ export type PartialUser = {
 	global_name: string | null;
 	/** The user's avatar hash */
 	avatar: string | null;
-	display_name_styles?: unknown;
+	/** The user's display name style */
+	display_name_styles?: DisplayNameStyle | null;
 	linked_users?: unknown;
 	/** Whether the user belongs to an OAuth2 application */
 	bot?: boolean;
@@ -69,10 +97,10 @@ export type PartialUser = {
 	/** The data for the user's avatar decoration */
 	avatar_decoration_data?: AvatarDecorationData | null;
 	/** Data for the user's collectibles */
-	collectibles?: unknown;
+	collectibles?: Collectibles | null;
 	/** @deprecated */
 	clan?: PrimaryGuild | null;
-	/** Data for the user's collectibles */
+	/** The user's primary guild */
 	primary_guild?: PrimaryGuild | null;
 	display_name?: unknown;
 };
@@ -1203,6 +1231,12 @@ export const enum MemberFlag {
 	CompletedOnboarding = 1 << 1,
 	BypassesVerification = 1 << 2,
 	StartedOnboarding = 1 << 3,
+	IsGuest = 1 << 4,
+	StartedHomeActions = 1 << 5,
+	CompletedHomeActions = 1 << 6,
+	AutomodQuarantinedUsername = 1 << 7,
+	DmSettingsUpsellAcknowledged = 1 << 9,
+	AutomodQuarantinedGuildTag = 1 << 10,
 }
 
 export type GuildMember = {
@@ -1210,6 +1244,8 @@ export type GuildMember = {
 	nick?: string | null;
 	/** Avatar hash */
 	avatar?: string | null;
+	avatar_decoration_data?: AvatarDecorationData | null;
+	collectibles?: Collectibles | null;
 	/** The member's guild banner hash */
 	banner?: string | null;
 	/** Role IDs */
@@ -1228,7 +1264,6 @@ export type GuildMember = {
 	 */
 	communication_disabled_until?: string | null;
 	unusual_dm_activity_until?: string | null;
-	avatar_decoration_data?: AvatarDecorationData | null;
 };
 
 export type PartialUserWithMemberField = PartialUser & { member: GuildMember };
@@ -1680,6 +1715,22 @@ export type GatewayMessageReactionRemoveEmojiDispatchPayload = GatewayGenericDis
 	guild_id?: string;
 	emoji: PartialEmoji;
 }>;
+export type GatewayVoiceStateUpdateDispatchPayload = GatewayGenericDispatchPayload<"VOICE_STATE_UPDATE", {
+	guild_id?: string | null;
+	channel_id: string | null;
+	user_id: string;
+	member?: GuildMember;
+	session_id: string;
+	deaf: boolean;
+	mute: boolean;
+	self_deaf: boolean;
+	self_mute: boolean;
+	self_stream?: boolean;
+	self_video: boolean;
+	suppress: boolean;
+	request_to_speak_timestamp: boolean;
+	discoverable?: boolean;
+}>;
 
 export type GatewayDispatchPayload =
 	GatewayReadyDispatchPayloadBot |
@@ -1705,6 +1756,7 @@ export type GatewayDispatchPayload =
 	GatewayMessageReactionRemoveDispatchPayload |
 	GatewayMessageReactionRemoveAllDispatchPayload |
 	GatewayMessageReactionRemoveEmojiDispatchPayload |
+	GatewayVoiceStateUpdateDispatchPayload |
 	GatewayGenericDispatchPayload<DispatchEventName, never>;
 
 export type GatewayReceivePayload =
