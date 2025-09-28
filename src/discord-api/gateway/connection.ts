@@ -211,6 +211,9 @@ export class GatewayConnection<GT extends GatewayTypes = GatewayTypes> extends E
 				}
 				this.#resumeState.seq = payload.s;
 				this.emit("dispatch", payload satisfies DT.GatewayDispatchPayload, this.#live);
+				if (payload.t === "RESUMED") {
+					this.#live = true;
+				}
 				break;
 
 			case DT.GatewayOpcode.Hello: {
