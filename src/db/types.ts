@@ -58,7 +58,8 @@ export const enum RequestType {
 	GetFiles,
 	GetFileHashUtilization,
 	AddFile,
-	GetLastMessageID,
+	GetLastSyncedMessageID,
+	SetLastSyncedMessageID,
 	GetGuilds,
 	SearchMessages,
 }
@@ -168,6 +169,7 @@ export type GetForumTagsRequest = {
 };
 export type AddMessageSnapshotRequest = {
 	type: RequestType.AddMessageSnapshot;
+	timing: Timing | null;
 	/** Used for the timing of the users' (e.g. author) snapshots. */
 	timestamp: number;
 	message: DT.Message;
@@ -262,9 +264,16 @@ export type AddFileRequest = {
 		hash: Uint8Array;
 	}
 );
-export type GetLastMessageIDRequest = {
-	type: RequestType.GetLastMessageID;
+export type GetLastSyncedMessageIDRequest = {
+	type: RequestType.GetLastSyncedMessageID;
 	channelID: string;
+	isThread: boolean;
+};
+export type SetLastSyncedMessageIDRequest = {
+	type: RequestType.SetLastSyncedMessageID;
+	channelID: string;
+	isThread: boolean;
+	lastSyncedMessageID: string | bigint | null;
 };
 export type GetGuildsRequest = {
 	type: RequestType.GetGuilds;
@@ -304,7 +313,8 @@ export type SingleRequest =
 	GetFileRequest |
 	GetFileHashUtilizationRequest |
 	AddFileRequest |
-	GetLastMessageIDRequest;
+	GetLastSyncedMessageIDRequest |
+	SetLastSyncedMessageIDRequest;
 export type IteratorRequest =
 	GetGuildsRequest |
 	GetRolesRequest |
@@ -350,7 +360,8 @@ export type SingleResponseFor<R extends SingleRequest> =
 	R extends GetFileRequest ? Omit<File, "url"> | undefined :
 	R extends GetFileHashUtilizationRequest ? boolean :
 	R extends AddFileRequest ? boolean :
-	R extends GetLastMessageIDRequest ? bigint | null :
+	R extends GetLastSyncedMessageIDRequest ? bigint | undefined :
+	R extends SetLastSyncedMessageIDRequest ? void :
 	never;
 
 export type ObjectSnapshotResponse<T> = {

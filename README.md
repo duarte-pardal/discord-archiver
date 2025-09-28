@@ -108,6 +108,7 @@ Query examples:
   - **Archive stickers and soundboard sounds**
   - **Archive poll votes**
   - **Archive DM channels**
+  - **Archive private threads**
   - **Archive applications, interactions (commands) and interaction arguments**
   - **Allow thread enumeration to be interrupted**
   - **Archive private threads without manage permission**

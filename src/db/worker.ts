@@ -77,7 +77,7 @@ function messageHandler(req: SingleRequest | IteratorRequest) {
 			parentPort!.off("message", messageHandler);
 			return;
 		}
-		if (typeof resp === "object" && resp !== null && Symbol.iterator in resp) {
+		if (typeof resp === "object" && (resp as typeof resp | null) !== null && Symbol.iterator in resp) {
 			const iterator = resp[Symbol.iterator]();
 			while (true) {
 				let result;

@@ -1,14 +1,23 @@
 import { GatewayConnection, GatewayTypes } from "../discord-api/gateway/connection.js";
-import { CachedTextLikeChannel, CachedThread } from "./cache.js";
+import { CachedGuild, CachedTextLikeChannel, CachedThread } from "./cache.js";
 import { RequestResult } from "../discord-api/rest.js";
 
-export type OngoingOperation = {
+export type OngoingOperationBase = {
 	abortController: AbortController;
 	end: Promise<void>;
+	account: Account;
 };
-export type OngoingMessageSync = OngoingOperation & {
+export type OngoingMessageSync = OngoingOperationBase & {
 	channel: CachedTextLikeChannel | CachedThread;
 };
+export type OngoingThreadSync = OngoingOperationBase & {
+	channel: CachedTextLikeChannel | CachedThread;
+};
+export type OngoingExpressionUploaderRequest = OngoingOperationBase & {
+	guild: CachedGuild;
+};
+export type OngoingDispatchHandling = OngoingOperationBase;
+export type OngoingOperation = OngoingMessageSync | OngoingThreadSync | OngoingExpressionUploaderRequest | OngoingDispatchHandling;
 
 export type AccountOptions = {
 	name: string;
@@ -30,20 +39,12 @@ export type Account = AccountOptions & {
 	disconnect: () => Promise<void>;
 
 	numberOfOngoingRESTOperations: number;
-	/** For channels and its public threads */
-	ongoingMessageSyncs: Map<CachedTextLikeChannel, Map<string /* the channel/thread ID */, OngoingMessageSync>>;
-	/** For private threads */
-	ongoingPrivateThreadMessageSyncs: Map<CachedTextLikeChannel, Map<string /* the thread ID */, OngoingMessageSync>>;
-	ongoingPublicThreadListSyncs: Map<CachedTextLikeChannel, OngoingOperation>;
-	ongoingPrivateThreadListSyncs: Map<CachedTextLikeChannel, OngoingOperation>;
-	ongoingJoinedPrivateThreadListSyncs: Map<CachedTextLikeChannel, OngoingOperation>;
-	ongoingExpressionUploaderRequests: Set<OngoingOperation>;
-
 	numberOfOngoingGatewayOperations: number;
-	/** Set of guild IDs */
-	ongoingMemberRequests: Set<string>;
 
-	ongoingDispatchHandlers: Set<OngoingOperation>;
+	ongoingOperations: Set<OngoingOperation>;
+
+	/** Set of guild IDs */
+	ongoingMemberRequestGuildIDs: Set<string>;
 
 	/** The sets and maps that contain entries with this account as the key, used when disconnecting the account */
 	references: Set<Set<Account> | Map<Account, unknown>>;

@@ -5,8 +5,7 @@
 --   * _timestamp: Contains the UNIX timestamp of when the snapshot was taken in bits 1-63 and the
 --     least significant bit indicates if the snapshot was taken in reaction to a gateway event
 --     (1 if it was, 0 if not). The special value 0 indicates that the snapshot depicts the state
---     of the object when it was created (e.g. message with edited_timestamp === null or snapshot
---     taken in reaction to a create event).
+--     of the object when it was created (e.g. snapshot taken in reaction to a create event).
 --   * _deleted: Contains the UNIX timestamp of when the first snapshot where the object was found
 --     to be deleted was taken in bits 1-63 and the least significant bit indicates if the
 --     deletion was caught in a gateway event. NULL if it wasn't deleted.
@@ -240,6 +239,7 @@ CREATE TABLE member_snapshots (
 
 CREATE TABLE latest_channel_snapshots (
 	id INTEGER NOT NULL PRIMARY KEY,
+	_last_synced_message_id INTEGER NOT NULL DEFAULT 0, -- the message ID from which the archiver must resume syncing in order to guarantee that every message in the channel is synced, or 0 if the archiver must start from the beginning of the channel
 	_deleted INTEGER,
 	type INTEGER NOT NULL, -- the type of channel
 	guild_id INTEGER REFERENCES latest_guild_snapshots (id), -- the ID of the guild, or NULL for DM channels
@@ -299,6 +299,7 @@ CREATE TABLE previous_channel_snapshots (
 
 CREATE TABLE latest_thread_snapshots (
 	id INTEGER NOT NULL PRIMARY KEY,
+	_last_synced_message_id INTEGER NOT NULL DEFAULT 0, -- the message ID from which the archiver must resume syncing in order to guarantee that every message in the thread is synced, or 0 if the archiver must start from the beginning of the thread
 	_deleted INTEGER,
 	type INTEGER NOT NULL, -- the type of channel
 	parent_id INTEGER NOT NULL REFERENCES latest_channel_snapshots (id), -- ID of the channel this thread was created from
@@ -375,9 +376,10 @@ CREATE TABLE latest_message_snapshots (
 	message_reference__guild_id INTEGER, -- ID of the originating message's guild
 	_sticker_ids BLOB NOT NULL, -- IDs of the stickers in the message, stored as 64-bit big-endian integers concatenated
 	---
-	_timestamp INTEGER NOT NULL, -- `edited_timestamp` in _timestamp format with the least significant bit always set to 1
+	_timestamp INTEGER NOT NULL,
 	_extra TEXT,
 	content TEXT, -- contents of the message
+	edited_timestamp INTEGER, -- When this message was edited (or null if never)
 	flags INTEGER, -- message flags combined as a bitfield
 	_attachment_ids BLOB -- IDs of the attachments in the message, stored as 64-bit big-endian integers concatenated
 );
@@ -396,9 +398,10 @@ CREATE TRIGGER latest_message_snapshots_au AFTER UPDATE ON latest_message_snapsh
 END;
 CREATE TABLE previous_message_snapshots (
 	id INTEGER NOT NULL REFERENCES latest_message_snapshots (id),
-	_timestamp INTEGER NOT NULL, -- `edited_timestamp` in _timestamp format with the least significant bit always set to 1
+	_timestamp INTEGER NOT NULL,
 	_extra TEXT,
 	content TEXT, -- contents of the message
+	edited_timestamp INTEGER, -- When this message was edited (or null if never)
 	flags INTEGER, -- message flags combined as a bitfield
 	_attachment_ids BLOB, -- IDs of the attachments in the message, stored as 64-bit big-endian integers concatenated
 	UNIQUE (id, _timestamp)

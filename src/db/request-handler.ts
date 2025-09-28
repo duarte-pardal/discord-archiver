@@ -54,6 +54,9 @@ export function getRequestHandler({ path, log }: { path: string; log?: Logger })
 		/** Gets the latest previous snapshot earlier than or at `_timestamp` for an object with a given `id` */
 		getPreviousSnapshot: Statement;
 		/** Checks if the snapshot properties of the latest snapshot are equal to those of the provided object. */
+		// TODO: We need a better comparison system because:
+		// - Discord sends some objects with properties set to null from one source and absent from another source
+		// - Discord always generates new attachment URLs
 		isLatestSnapshotEqual: Statement;
 		/** Gets the _timestamp value of the latest snapshot. */
 		getLatestTimestamp: Statement;
@@ -154,7 +157,10 @@ SELECT id FROM latest_${objectName}_snapshots WHERE ${parentIDName} IS :$parentI
 		findFileByHash: db.prepare("SELECT url FROM files WHERE content_hash IS :content_hash;"),
 		addFile: db.prepare("INSERT OR IGNORE INTO files (url, content_hash, error_code) VALUES (:url, :content_hash, :error_code);"),
 
-		getLastMessageID: db.prepare("SELECT max(id) FROM latest_message_snapshots WHERE channel_id = :channel_id;"),
+		getChannelLastSyncedMessageID: db.prepare("SELECT _last_synced_message_id FROM latest_channel_snapshots WHERE id = :id;"),
+		getThreadLastSyncedMessageID: db.prepare("SELECT _last_synced_message_id FROM latest_thread_snapshots WHERE id = :id;"),
+		setChannelLastSyncedMessageID: db.prepare("UPDATE latest_channel_snapshots SET _last_synced_message_id = :_last_synced_message_id WHERE id = :id;"),
+		setThreadLastSyncedMessageID: db.prepare("UPDATE latest_thread_snapshots SET _last_synced_message_id = :_last_synced_message_id WHERE id = :id;"),
 	} as const;
 	const objectStatements = {
 		user: getStatements("user", null, ["username", "discriminator", "global_name", "avatar", "avatar_decoration_data__asset", "avatar_decoration_data__sku_id", "avatar_decoration_data__expires_at", "collectibles__nameplate__asset", "collectibles__nameplate__sku_id", "collectibles__nameplate__label", "collectibles__nameplate__palette", "collectibles__nameplate__expires_at", "display_name_styles__font_id", "display_name_styles__effect_id", "display_name_styles__colors", "primary_guild__identity_guild_id", "primary_guild__identity_enabled", "primary_guild__tag", "primary_guild__badge", "public_flags"], ["bot", "system"]),
@@ -203,7 +209,8 @@ SELECT _user_id AS id FROM member_snapshots WHERE _guild_id IS :$parentID AND _t
 		thread: getStatements("thread", "parent_id", ["name", "rate_limit_per_user", "owner_id", "thread_metadata__archived", "thread_metadata__auto_archive_duration", "thread_metadata__archive_timestamp", "thread_metadata__locked", "thread_metadata__invitable", "thread_metadata__create_timestamp", "flags", "applied_tags"], ["parent_id", "type"]),
 		forumTag: getStatements("forum_tag", "channel_id", ["name", "moderated", "emoji"], ["channel_id"]),
 		message: {
-			...getStatements("message", "channel_id", ["content", "flags", "_attachment_ids"], ["channel_id", "author__id", "tts", "type", "message_reference__message_id", "message_reference__channel_id", "message_reference__guild_id", "_sticker_ids"]),
+			...getStatements("message", "channel_id", ["content", "edited_timestamp", "flags", "_attachment_ids"], ["channel_id", "author__id", "tts", "type", "message_reference__message_id", "message_reference__channel_id", "message_reference__guild_id", "_sticker_ids"]),
+			// BUG: Search is broken on threads.
 			search: db.prepare(`\
 SELECT
 	latest_message_snapshots._timestamp, latest_message_snapshots._deleted,
@@ -442,7 +449,6 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _deleted IS NULL AND user__id I
 
 	function decodeMessage(snapshot: any, timestamp: number | null | undefined, channelID: string, includeReferencedMessage: boolean) {
 		const message: DT.Message = decodeObject(ObjectType.Message, snapshot);
-		message.edited_timestamp = snapshot._timestamp === 0n ? null : (new Date(Number(snapshot._timestamp >> 1n)).toISOString());
 		message.timestamp = new Date(Number(snowflakeToTimestamp(snapshot.id))).toISOString();
 		message.pinned = false;
 
@@ -868,43 +874,7 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _deleted IS NULL AND user__id I
 						req.message.message_reference.guild_id;
 				}
 
-				// Sometimes, when a message contains links, Discord will send a MESSAGE_CREATE
-				// event without embeds and, after fetching the page and loading the embed, a
-				// MESSAGE_UPDATE event with the embeds. Since this doesn't count as an edit,
-				// `edited_timestamp` is not updated (except for sub-millisecond digits, which are set
-				// to 0, but we ignore those anyway). If a message is edited by the user before the
-				// embeds load, two update events are received: one for the edit the user made,
-				// containing the new content, and a new `edited_timestamp`; and another one
-				// afterwards, when the embed loads, with the original `embed_timestamp`, the original
-				// content, and the respective embed. If the same message is fetched using the REST API
-				// after the embed loads, the response has the new content, the new `edited_timestamp`,
-				// but the embeds for the original content, which does not match the latest
-				// MESSAGE_UPDATE event. It's even possible for a user with an official Discord client
-				// to send a message with an embed but no links by editing out the link before the
-				// embed loads. In these cases, we add the embeds to the latest snapshot instead of
-				// saving a new snapshot.
-				msg._timestamp = req.message.edited_timestamp == null ? 0 : (BigInt(new Date(req.message.edited_timestamp).getTime()) << 1n | 1n);
-				const snapshot: any = objectStatements.message.getLatestSnapshot.get({
-					$getAll: 0,
-					id: req.message.id,
-				});
-				if (snapshot === undefined) {
-					// No recorded snapshots (message created or edited)
-					objectStatements.message.addLatestSnapshot.run(msg);
-					response = AddSnapshotResult.AddedFirstSnapshot;
-				} else if (msg._timestamp <= snapshot._timestamp) {
-					// Embed loaded (described above)
-					log?.verbose?.(`Updated embed for message with ID ${msg.id}.`);
-					snapshot.embeds = JSON.stringify(req.message.embeds);
-					objectStatements.message.replaceLatestSnapshot.run(snapshot);
-					response = AddSnapshotResult.SameAsLatest;
-				} else {
-					// Message edited normally
-					msg.embeds = JSON.stringify(req.message.embeds);
-					objectStatements.message.copyLatestSnapshot.run(msg);
-					objectStatements.message.replaceLatestSnapshot.run(msg);
-					response = AddSnapshotResult.AddedAnotherSnapshot;
-				}
+				response = addSnapshot(objectStatements.message, assignTiming(msg, req.timing));
 
 				for (const attachment of req.message.attachments) {
 					const encoded = encodeObject(ObjectType.Attachment, attachment);
@@ -922,6 +892,7 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _deleted IS NULL AND user__id I
 				break;
 			}
 
+			// BUG: The reaction requests may fail if the user is not in the database.
 			case RequestType.AddInitialReactions: {
 				const emoji = encodeEmoji(req.emoji);
 				if (req.emoji.id) {
@@ -1064,10 +1035,25 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _deleted IS NULL AND user__id I
 				break;
 			}
 
-			case RequestType.GetLastMessageID: {
-				response = (statements.getLastMessageID.get({
-					channel_id: req.channelID,
-				}) as any)["max(id)"];
+			case RequestType.GetLastSyncedMessageID: {
+				response = ((
+					req.isThread ?
+						statements.getThreadLastSyncedMessageID :
+						statements.getChannelLastSyncedMessageID
+				).get({
+					id: req.channelID,
+				}) as any)?._last_synced_message_id;
+				break;
+			}
+			case RequestType.SetLastSyncedMessageID: {
+				(
+					req.isThread ?
+						statements.setThreadLastSyncedMessageID :
+						statements.setChannelLastSyncedMessageID
+				).run({
+					id: req.channelID,
+					_last_synced_message_id: req.lastSyncedMessageID,
+				});
 				break;
 			}
 

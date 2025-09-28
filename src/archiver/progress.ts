@@ -40,7 +40,7 @@ export function updateProgressOutput(): void {
 		min = (downloadProgresses.values().next() as IteratorYieldResult<SyncProgress>).value;
 	}
 	if (min.progress === Infinity) {
-		setProgress("Nothing to sync.");
+		setProgress("Everything is synced.");
 	} else {
 		setProgress(`\
 ${progressCounts.messageSyncs === 0 ? "" : `Downloading messages in ${progressCounts.messageSyncs} channels. `}\

@@ -1,7 +1,7 @@
 import test, { TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { getRequestHandler, RequestHandler } from "./request-handler.js";
-import { AddGuildMemberSnapshotRequest, AddGuildMemberLeaveRequest, AddSnapshotResult, GetChannelsRequest, GetForumTagsRequest, GetGuildEmojisRequest, GetGuildMembersRequest, GetGuildsRequest, GetMessagesRequest, GetRolesRequest, GetThreadsRequest, IteratorResponseFor, MarkMessageAsDeletedRequest, RequestType, SyncGuildMembersRequest, Timing } from "./types.js";
+import { AddGuildMemberSnapshotRequest, AddGuildMemberLeaveRequest, AddSnapshotResult, GetChannelsRequest, GetForumTagsRequest, GetGuildEmojisRequest, GetGuildMembersRequest, GetGuildsRequest, GetMessagesRequest, GetRolesRequest, GetThreadsRequest, IteratorResponseFor, MarkMessageAsDeletedRequest, RequestType, SyncGuildMembersRequest, Timing, SetLastSyncedMessageIDRequest, GetLastSyncedMessageIDRequest } from "./types.js";
 import { Attachment, ChannelType, GatewayGuildCreateDispatchPayload, GuildMember, MemberFlag, Message, User } from "../discord-api/types.js";
 import { parseArgs } from "node:util";
 import { unlinkSync } from "node:fs";
@@ -3007,6 +3007,7 @@ for (const { data: message } of messages) {
 	assert.equal(request({
 		type: RequestType.AddMessageSnapshot,
 		message,
+		timing: guildSnapshotTiming,
 		timestamp: guildSnapshotTiming.timestamp,
 	}), AddSnapshotResult.AddedFirstSnapshot);
 }
@@ -3089,6 +3090,7 @@ function stripMessage(message: Partial<Message>) {
 	}
 
 	message.pinned = false;
+	// TODO: Archive mentions
 	message.mentions = [];
 	message.mention_roles = [];
 	message.mention_everyone = false;
@@ -3394,6 +3396,10 @@ await test("previous message snapshots match", async (t) => {
 		assert.equal(request({
 			type: RequestType.AddMessageSnapshot,
 			message: entry.data,
+			timing: {
+				timestamp: new Date(entry.data.edited_timestamp!).getTime(),
+				realtime: true,
+			},
 			timestamp: entry.timestamp,
 		}), AddSnapshotResult.AddedAnotherSnapshot);
 
@@ -3411,7 +3417,7 @@ await test("previous message snapshots match", async (t) => {
 		} satisfies GetMessagesRequest)].find(e => e.data.id === id);
 		assertEqual({
 			expected: {
-				timing: null,
+				timing: guildSnapshotTiming,
 				deletedTiming: null,
 				data: entry.data,
 			},
@@ -3705,6 +3711,73 @@ await test("guild members with missing mandatory properties are rejected", () =>
 		} satisfies AddGuildMemberSnapshotRequest),
 		TypeError,
 	);
+});
+
+async function testLastSyncedMessageID(t: TestContext, isThread: boolean) {
+	const channelID = (isThread ? guild.threads : guild.channels)[0].id;
+	const lastSyncedMessageID = 123456789n;
+
+	await t.test("it's initially 0", () => {
+		assert.equal(
+			request({
+				type: RequestType.GetLastSyncedMessageID,
+				channelID,
+				isThread,
+			} satisfies GetLastSyncedMessageIDRequest),
+			0n,
+		);
+	});
+	await t.test("getting returns the last set value", () => {
+		request({
+			type: RequestType.SetLastSyncedMessageID,
+			channelID,
+			isThread,
+			lastSyncedMessageID: lastSyncedMessageID,
+		} satisfies SetLastSyncedMessageIDRequest);
+		assert.equal(
+			request({
+				type: RequestType.GetLastSyncedMessageID,
+				channelID,
+				isThread,
+			} satisfies GetLastSyncedMessageIDRequest),
+			lastSyncedMessageID,
+		);
+	});
+	await t.test("the get request returns `undefined` for unknown channels/threads", () => {
+		assert.equal(
+			request({
+				type: RequestType.GetLastSyncedMessageID,
+				channelID: "12345678",
+				isThread,
+			} satisfies GetLastSyncedMessageIDRequest),
+			undefined,
+		);
+	});
+
+	await t.test("can't be set to `null`", () => {
+		assert.throws(
+			() => {
+				request({
+					type: RequestType.SetLastSyncedMessageID,
+					channelID,
+					isThread,
+					lastSyncedMessageID: null,
+				} satisfies SetLastSyncedMessageIDRequest);
+			},
+		);
+		assert.equal(
+			request({
+				type: RequestType.GetLastSyncedMessageID,
+				channelID,
+				isThread,
+			} satisfies GetLastSyncedMessageIDRequest),
+			lastSyncedMessageID,
+		);
+	});
+}
+await test("getting/setting the latest synced message ID works", async (t) => {
+	await t.test("for channels", t => testLastSyncedMessageID(t, false));
+	await t.test("for threads", t => testLastSyncedMessageID(t, true));
 });
 
 requestHandler({

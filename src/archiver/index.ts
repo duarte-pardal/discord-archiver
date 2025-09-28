@@ -6,18 +6,18 @@ process.on("uncaughtExceptionMonitor", () => {
 });
 
 import * as DT from "../discord-api/types.js";
-import { AddGuildMemberSnapshotRequest, AddSnapshotResult, getDatabaseConnection, RequestType, Timing } from "../db/index.js";
+import { AddGuildMemberSnapshotRequest, AddSnapshotResult, getDatabaseConnection, GetLastSyncedMessageIDRequest, RequestType, SetLastSyncedMessageIDRequest, Timing } from "../db/index.js";
 import { GatewayConnection } from "../discord-api/gateway/connection.js";
 import { apiReq, RequestResult } from "../discord-api/rest.js";
 import { computeChannelPermissions, computeGuildPermissions } from "./permissions.js";
 import { areMapsEqual } from "../util/map-equality.js";
-import { abortError, waitForAbort } from "../util/abort.js";
+import { abortError } from "../util/abort.js";
 import { parseArgs, ParseArgsConfig } from "node:util";
 import log from "../util/log.js";
 import { getTag } from "../discord-api/tag.js";
 import { RateLimiter } from "../util/rate-limiter.js";
-import { CachedTextLikeChannel, CachedGuild, createCachedChannel, createCachedThread, guilds, isGuildTextLikeChannel, CachedThread, CachedChannel, dmChannels as directChannels } from "./cache.js";
-import { Account, AccountOptions, accounts, getLeastGatewayOccupiedAccount, getLeastRESTOccupiedAccount, OngoingOperation } from "./accounts.js";
+import { CachedTextLikeChannel, CachedGuild, guilds, isGuildTextLikeChannel, CachedThread, CachedChannel, directChannels, cacheThread, cacheChannel, CachedPermissionOverwrites } from "./cache.js";
+import { Account, AccountOptions, accounts, getLeastGatewayOccupiedAccount, getLeastRESTOccupiedAccount, OngoingDispatchHandling, OngoingExpressionUploaderRequest } from "./accounts.js";
 import { ArchivedThreadSyncProgress, downloadProgresses, MessageSyncProgress, progressCounts, startProgressDisplay, stopProgressDisplay, updateProgressOutput } from "./progress.js";
 import { DownloadArguments, getCDNEmojiURL, getCDNHashURL, getDownloadTransactionFunction, normalizeURL } from "./files.js";
 import { mergeOptions } from "../util/http.js";
@@ -145,11 +145,14 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 
 	// ARCHIVING
 
-	// BUG: This doesn't extract the files of forwarded messages.
-	function extractMessageFiles(message: DT.Message, options: MessageOptions): DownloadArguments[] {
+	class ExpectedError extends Error {
+		// To prevent wrong `@typescript-eslint/no-base-to-string` lints
+		declare toString: () => string;
+	}
+
+	function extractMessageFiles(message: DT.Message | DT.SnapshotMessage, options: MessageOptions, files: DownloadArguments[] = []): DownloadArguments[] {
 		const emojis = extractEmojis(message.content);
 
-		const files: DownloadArguments[] = [];
 		if (options.downloadEmojisInMessages) {
 			for (const emoji of emojis) {
 				const url = getCDNEmojiURL(emoji, config.mediaConfig.usedEmoji, config.mediaConfig.animatedUsedEmoji);
@@ -183,10 +186,15 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 				}
 			}
 		}
-		if (message.author.avatar != null && options.downloadAuthorAvatars) {
+		if (message.author?.avatar != null && options.downloadAuthorAvatars) {
 			const avatarURL = getCDNHashURL(`/avatars/${message.author.id}`, message.author.avatar, config.mediaConfig.avatar, config.mediaConfig.animatedAvatar);
 			files.push({ url: avatarURL, downloadURL: avatarURL });
 		}
+
+		for (const snapshot of message.message_snapshots ?? []) {
+			extractMessageFiles(snapshot.message, options, files);
+		}
+
 		return files;
 	}
 
@@ -195,10 +203,14 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 		message: DT.Message,
 		cachedChannel: CachedTextLikeChannel | CachedThread,
 		timestamp: number,
+		realtime: boolean,
+		fromCreateEvent: boolean,
 		abortSignal: AbortSignal,
 		includeReactions: boolean,
 		files = extractMessageFiles(message, cachedChannel.options),
-	) {
+	): Promise<AddSnapshotResult> {
+		const timing = fromCreateEvent ? null : { timestamp, realtime };
+
 		const restOptions = mergeOptions(account.restOptions, { signal: abortSignal });
 
 		const reactions: {
@@ -234,7 +246,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 						({ response, data, rateLimitReset } = await account.request<DT.PartialUser[]>(`/channels/${cachedChannel.id}/messages/${message.id}/reactions/${emoji}?limit=100&type=${reactionType}&after=${userID}`, restOptions, true));
 						if (abortSignal.aborted) throw abortError;
 						if (!response.ok) {
-							throw new Error(`Got HTTP ${response.status} ${response.statusText} while requesting reactions for the message with ID ${message.id} from #${cachedChannel.name}`);
+							throw new ExpectedError(`Got HTTP ${response.status} ${response.statusText} while requesting reactions for the message with ID ${message.id} from #${cachedChannel.name}`);
 						}
 						const users = data!;
 
@@ -261,6 +273,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 		await doDownloadTransaction(abortSignal, files, async () => {
 			messageAddPromise = db.request({
 				type: RequestType.AddMessageSnapshot,
+				timing,
 				timestamp,
 				message: message,
 			});
@@ -279,45 +292,23 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 
 	// SYNCING
 
-	// TODO: This can be optimized. We don't need to wait for all reactions/files from the previous
-	// message to be downloaded to start downloading the ones from the next message.
 	async function syncMessages(account: Account, channel: CachedTextLikeChannel | CachedThread): Promise<void> {
-		const options = channel.options;
-		if (!(options.archiveMessages && options.requestPastMessages)) return;
-
-		const lastMessageID = channel.lastMessageID;
-		channel.lastMessageID = null;
-		const parentChannel = channel.parent ?? channel;
-
 		const abortController = new AbortController();
 		const restOptions = mergeOptions(account.restOptions, { signal: abortController.signal });
 
 		// Add this operation to the ongoing syncs list
 		const { promise: end, resolve: endOperation } = Promise.withResolvers<void>();
-		const sync = { abortController, end, channel };
-		const ongoingSyncs = channel.parent !== null && channel.private ?
-			account.ongoingPrivateThreadMessageSyncs :
-			account.ongoingMessageSyncs;
-		let ongoingChannelSyncs = ongoingSyncs.get(parentChannel);
-		if (ongoingChannelSyncs !== undefined) {
-			ongoingChannelSyncs.set(channel.id, sync);
-		} else {
-			ongoingChannelSyncs = new Map([[channel.id, sync]]);
-			ongoingSyncs.set(parentChannel, ongoingChannelSyncs);
+		const sync = { abortController, end, account, channel };
+		if (channel.messageSync !== null) {
+			throw new Error("There can't be two message syncs for the same channel running simultaneously.");
 		}
+		channel.messageSync = sync;
+		account.ongoingOperations.add(sync);
 		account.numberOfOngoingRESTOperations++;
 
 		let progress: MessageSyncProgress | undefined;
 
 		try {
-			// Check if it is necessary to sync this channel based on last_message_id and the id of the last stored message
-			// TODO: Don't check this when switching accounts
-			const lastStoredMessageID = await db.request({ type: RequestType.GetLastMessageID, channelID: channel.id });
-			if (!(lastMessageID == null || lastStoredMessageID == null || lastStoredMessageID < BigInt(lastMessageID))) {
-				return;
-			}
-			log.verbose?.(`${lastStoredMessageID == null ? "Started" : "Resumed"} syncing messages from #${channel.name} (${channel.id})${lastStoredMessageID == null ? "" : ` after message ${lastStoredMessageID}`} using ${account.name}.`);
-
 			progressCounts.messageSyncs++;
 			progress = {
 				channel,
@@ -326,103 +317,126 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 			downloadProgresses.add(progress);
 			updateProgressOutput();
 
-			const lastMessageIDNum = lastMessageID != null ? Number.parseInt(lastMessageID) : null;
+			const lastMessageIDNum = channel.lastMessageID != null ? Number(channel.lastMessageID) : null;
 			let firstMessageIDNum: number | undefined;
 
-			let messageID = lastStoredMessageID?.toString() ?? "0";
+			let messageID = channel.lastSyncedMessageID?.toString() ?? "0";
+			log.verbose?.(`${messageID === "0" ? "Started" : "Resumed"} syncing messages from #${channel.name} (${channel.id})${messageID === "0" ? "" : ` after message ${messageID}`} using ${account.name}.`);
 
-			function updateProgress(currentID: string, count: number) {
-				progress!.progress = lastMessageIDNum === null ? null : (Number.parseInt(currentID) - firstMessageIDNum!) / (lastMessageIDNum - firstMessageIDNum!);
+			function updateProgress(count: number) {
+				progress!.progress = lastMessageIDNum === null ? null : (Number.parseInt(messageID) - firstMessageIDNum!) / (lastMessageIDNum - firstMessageIDNum!);
 				progressCounts.messagesArchived += count;
 				updateProgressOutput();
 			}
 
-			main:
+			let previousIterationPromise: Promise<void> | undefined;
+
 			while (true) {
 				const { response, data, rateLimitReset } = await account.request<DT.Message[]>(`/channels/${channel.id}/messages?limit=100&after=${messageID}`, restOptions, true);
 				if (abortController.signal.aborted) throw abortError;
-				if (response.status === 403 || response.status === 404) {
-					// TODO: Maybe not ideal?
-					log.verbose?.(`Hanging message sync from #${channel.name} (${channel.id}) using ${account.name} because we got a ${response.status} ${response.statusText} response.`);
-					await waitForAbort(abortController.signal);
-					throw abortError;
-				} else if (!response.ok) {
+				if (!response.ok) {
 					log.warning?.(`Stopped syncing messages from #${channel.name} (${channel.id}) using ${account.name} because we got a ${response.status} ${response.statusText} response.`);
 					break;
 				}
 
 				const timestamp = Date.now();
+				const timing = {
+					timestamp,
+					realtime: false,
+				};
 				const messages = data!;
 
-				if (messages.length > 0) {
-					// Messages must be added from oldest to newest so that the program can detect
-					// which messages need to be archived solely based on the ID of the last archived message.
-					// Every message with reactions or downloadable files is added on its own transaction.
-					// The other messages (simple messages) are grouped together in a single transaction to
-					// improve performance.
+				const promises: Promise<unknown>[] = [];
+				// All messages that don't require separate information to archive are grouped in
+				// the same transaction to improve performance.
+				const simpleMessages: DT.Message[] = [];
 
+				if (messages.length > 0) {
 					firstMessageIDNum ??= Number.parseInt(messages.at(-1)!.id);
 					messageID = messages[0].id;
 
-					let lastMessageAddPromise: Promise<AddSnapshotResult>;
-					let i: number;
-					let simpleMessagesStartIndex: number = messages.length - 1;
-
-					function flushSimpleMessages() {
-						if (simpleMessagesStartIndex === i) return;
-						// Since the message array is iterated in reverse, startIndex > endIndex.
-						const startIndex = simpleMessagesStartIndex; // inclusive
-						const endIndex = i; // exclusive
-						updateProgress(messages[endIndex + 1].id, startIndex - endIndex);
-						db.transaction(async () => {
-							for (let j = startIndex; j > endIndex; j--) {
-								lastMessageAddPromise = db.request({
-									type: RequestType.AddMessageSnapshot,
-									timestamp,
-									message: messages[j],
-								});
-							}
-						});
-					}
-
-					for (i = messages.length - 1; i >= 0; i--) {
+					for (let i = messages.length - 1; i >= 0; i--) {
 						const message = messages[i];
+						if (i >= 1 && BigInt(messages[i-1].id) <= BigInt(message.id)) {
+							throw new Error("Assertion failed: The messages aren't ordered in the message list response.");
+						}
 
-						const files = extractMessageFiles(message, options);
+						const files = extractMessageFiles(message, channel.options);
 
 						if (
-							(options.reactionArchivalMode === "users" && message.reactions !== undefined && message.reactions.length !== 0) ||
+							(channel.options.reactionArchivalMode === "users" && message.reactions !== undefined && message.reactions.length !== 0) ||
 							files.length > 0
 						) {
-							flushSimpleMessages();
-							simpleMessagesStartIndex = i - 1;
-
-							try {
-								await archiveMessageSnapshot(account, message, channel, timestamp, abortController.signal, true, files);
-							} catch (err) {
-								if (err === abortError) throw err;
-								log.warning?.(`Stopped syncing messages from #${channel.name} (${channel.id}) using ${account.name} because we got a ${response.status} ${response.statusText} response.`);
-								break main;
-							}
-
-							updateProgress(message.id, 1);
+							const promise = archiveMessageSnapshot(account, message, channel, timestamp, false, false, abortController.signal, true, files)
+								.then(() => {
+									updateProgress(1);
+								});
+							promise.catch(() => {});
+							promises.push(promise);
+						} else {
+							simpleMessages.push(message);
 						}
 					}
-					flushSimpleMessages();
 
-					// Since there is at least 1 message, the promise variable will always be defined
-					const done = await lastMessageAddPromise! !== AddSnapshotResult.AddedFirstSnapshot;
-
-					if (done) {
-						// The last message was already in the database, so we reached the
-						// point where we started getting messages from the gateway.
-						log.verbose?.(`Finished syncing messages from #${channel.name} (${channel.id}) because a known message (${messages[0].id}) was found.`);
-						break;
-					}
+					const promise = db.transaction(async () => {
+						for (const message of simpleMessages) {
+							db.request({
+								type: RequestType.AddMessageSnapshot,
+								timing,
+								timestamp,
+								message,
+							});
+						}
+					}).then(() => {
+						updateProgress(simpleMessages.length);
+					});
+					promise.catch(() => {});
+					promises.push(promise);
 				}
 
+				await previousIterationPromise;
+				// This must be defined here in order to make sure that the value is from the current iteration.
+				const lastStoredMessageID = BigInt(messageID);
+				previousIterationPromise = (async () => {
+					try {
+						await Promise.all(promises);
+					} catch (err) {
+						if (err !== abortError && err instanceof ExpectedError) {
+							log.warning?.(`Got an error while syncing messages from #${channel.name} (${channel.id}) using ${account.name}. This may be due to losing the ability to access the channel (for example, if the permissions changed). This sync operation will stop. ${err.toString()}.`);
+							throw abortError;
+						} else {
+							throw err;
+						}
+					}
+
+					channel.lastSyncedMessageID =
+						messages.length >= 100 ?
+							// We have not reached the end.
+							lastStoredMessageID :
+							// We have reached the end.
+							// Take the maximum of `channel.lastMessageID` and `lastStoredMessageID` to
+							// prevent needlessly syncing when `channel.lastMessageID` points to a
+							// deleted message.
+							channel.lastMessageID != null && channel.lastMessageID > lastStoredMessageID ?
+								channel.lastMessageID :
+								lastStoredMessageID;
+					await db.request({
+						type: RequestType.SetLastSyncedMessageID,
+						channelID: channel.id,
+						isThread: channel.parent !== null,
+						lastSyncedMessageID: channel.lastSyncedMessageID,
+					} satisfies SetLastSyncedMessageIDRequest);
+				})();
+				previousIterationPromise.catch(() => {});
+
 				if (messages.length < 100) {
+					// We've reached the end.
+					await previousIterationPromise;
 					log.verbose?.(`Finished syncing messages from #${channel.name} (${channel.id}) using ${account.name}.`);
+					channel.areMessagesSynced = true;
+					if (channel.parent !== null) {
+						deleteThreadIfUseless(channel);
+					}
 					progress.progress = 1;
 					updateProgressOutput();
 					break;
@@ -434,7 +448,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 			if (err === abortError) {
 				log.verbose?.(`Stopped syncing messages from #${channel.name} (${channel.id}) using ${account.name}.`);
 			} else {
-				log.error?.("Unexpected error while syncing messages.");
+				log.error?.(`Unexpected error while syncing messages from #${channel.name} (${channel.id}) using ${account.name}: ${err as any}`);
 				throw err;
 			}
 		} finally {
@@ -445,26 +459,31 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 			updateProgressOutput();
 
 			// Remove this operation from the ongoing syncs list
-			if (ongoingChannelSyncs.size > 1) {
-				ongoingChannelSyncs.delete(channel.id);
-			} else {
-				ongoingSyncs.delete(parentChannel);
-			}
+			channel.messageSync = null;
+			account.ongoingOperations.delete(sync);
 			account.numberOfOngoingRESTOperations--;
 			endOperation();
 		}
 	}
 
-	// TODO: This assumes that the thread enumeration is not interrupted
 	enum ArchivedThreadListType {
 		Public,
 		Private,
 		JoinedPrivate,
 	}
-	async function syncAllArchivedThreads(account: Account, channel: CachedTextLikeChannel, type: ArchivedThreadListType) {
-		if (!(channel.options.archiveThreads && channel.options.requestArchivedThreads)) return;
+	async function syncArchivedThreads(account: Account, channel: CachedTextLikeChannel, type: ArchivedThreadListType) {
+		const abortController = new AbortController();
+		const restOptions = mergeOptions(account.restOptions, { signal: abortController.signal });
 
-		log.verbose?.(`Started enumerating ${ArchivedThreadListType[type]} archived threads from #${channel.name} (${channel.id}) using ${account.name}.`);
+		const { promise: end, resolve: endOperation } = Promise.withResolvers<void>();
+		const sync = { abortController, end, account, channel };
+		if (channel.publicThreadSync !== null) {
+			throw new Error(`There can't be two ${ArchivedThreadListType[type]} archived thread syncs for the same channel running simultaneously.`);
+		}
+		channel.publicThreadSync = sync;
+		account.ongoingOperations.add(sync);
+
+		account.numberOfOngoingRESTOperations++;
 
 		progressCounts.threadEnumerations++;
 		const progress: ArchivedThreadSyncProgress = {
@@ -474,34 +493,21 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 		downloadProgresses.add(progress);
 		updateProgressOutput();
 
-		const abortController = new AbortController();
-		const restOptions = mergeOptions(account.restOptions, { signal: abortController.signal });
+		try {
+			let archiveTimestampString = "";
 
-		const { promise: end, resolve: endOperation } = Promise.withResolvers<void>();
-		const ongoingMap =
-			type === ArchivedThreadListType.Public ? account.ongoingPublicThreadListSyncs :
-			type === ArchivedThreadListType.Private ? account.ongoingPrivateThreadListSyncs :
-			account.ongoingJoinedPrivateThreadListSyncs;
-		ongoingMap.set(channel, { abortController, end });
-		account.numberOfOngoingRESTOperations++;
+			log.verbose?.(`Started enumerating ${ArchivedThreadListType[type]} archived threads from #${channel.name} (${channel.id}) using ${account.name}.`);
 
-		let oldestThreadArchivedTimestamp = "";
-		while (true) {
-			try {
+			while (true) {
 				const { response, data, rateLimitReset } = await account.request<DT.ListThreadsResponse>(
-					type === ArchivedThreadListType.Public ? `/channels/${channel.id}/threads/archived/public?limit=100&before=${encodeURIComponent(oldestThreadArchivedTimestamp)}` :
-					type === ArchivedThreadListType.Private ? `/channels/${channel.id}/threads/archived/private?limit=100&before=${encodeURIComponent(oldestThreadArchivedTimestamp)}` :
-					`/channels/${channel.id}/users/@me/threads/archived/private?limit=100&before=${encodeURIComponent(oldestThreadArchivedTimestamp)}`,
+					type === ArchivedThreadListType.Public ? `/channels/${channel.id}/threads/archived/public?limit=100&before=${encodeURIComponent(archiveTimestampString)}` :
+					type === ArchivedThreadListType.Private ? `/channels/${channel.id}/threads/archived/private?limit=100&before=${encodeURIComponent(archiveTimestampString)}` :
+					`/channels/${channel.id}/users/@me/threads/archived/private?limit=100&before=${encodeURIComponent(archiveTimestampString)}`,
 					restOptions,
 					true,
 				);
 				if (abortController.signal.aborted) throw abortError;
-				if (response.status === 403 || response.status === 404) {
-					// TODO: Maybe not ideal?
-					log.verbose?.(`Hanging ${ArchivedThreadListType[type]} archived thread enumeration from #${channel.name} (${channel.id}) using ${account.name} because we got a ${response.status} ${response.statusText} response.`);
-					await waitForAbort(abortController.signal);
-					throw abortError;
-				} else if (!response.ok) {
+				if (!response.ok) {
 					log.warning?.(`Stopped enumerating ${ArchivedThreadListType[type]} archived threads from #${channel.name} (${channel.id}) using ${account.name} because we got a ${response.status} ${response.statusText} response.`);
 					break;
 				}
@@ -509,7 +515,9 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 				const list = data!;
 
 				if (list.threads.length > 0) {
-					db.transaction(async () => {
+					archiveTimestampString = list.threads.at(-1)!.thread_metadata.archive_timestamp;
+
+					await db.transaction(async () => {
 						for (let i = list.threads.length - 1; i >= 0; i--) {
 							db.request({
 								type: RequestType.AddThreadSnapshot,
@@ -525,37 +533,40 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 					// TODO: The program will always attempt to sync all threads at the same time.
 					// This means that the memory usage is proportional to the number of threads.
 					for (const thread of list.threads) {
-						// channel.accountsWithReadPermission is guaranteed to have an account because
-						// if it doesn't, this sync would have been aborted.
-						syncMessages(getLeastRESTOccupiedAccount(channel.accountsWithReadPermission)!, createCachedThread(thread, config, channel));
+						if (!thread.thread_metadata.archived) {
+							throw new Error("Assertion failed: got an active thread while requesting archived threads");
+						}
+						let cachedThread = channel.threads.get(thread.id);
+						cachedThread = cacheThread(cachedThread, thread, config, channel, false);
+						updateMessageSync(cachedThread);
 					}
-
-					oldestThreadArchivedTimestamp = list.threads.at(-1)!.thread_metadata.archive_timestamp;
 				}
 				if (!list.has_more) {
-					log.verbose?.(`Finished enumerating ${ArchivedThreadListType[type]} archived threads from #${channel.name} (${channel.id}) using ${account.name}.`);
 					break;
 				}
 
 				await rateLimitReset;
-			} catch (err) {
-				if (err === abortError) {
-					log.verbose?.(`Stopped enumerating ${ArchivedThreadListType[type]} archived threads from #${channel.name} (${channel.id}) using ${account.name}.`);
-					break;
-				} else {
-					log.error?.("Unexpected error while syncing archived threads.");
-					throw err;
-				}
 			}
+
+			log.verbose?.(`Finished enumerating ${ArchivedThreadListType[type]} archived threads from #${channel.name} (${channel.id}) using ${account.name}.`);
+			channel.arePublicThreadsSynced = true;
+		} catch (err) {
+			if (err === abortError) {
+				log.verbose?.(`Stopped enumerating ${ArchivedThreadListType[type]} archived threads from #${channel.name} (${channel.id}) using ${account.name}.`);
+			} else {
+				log.error?.("Unexpected error while syncing archived threads.");
+				throw err;
+			}
+		} finally {
+			channel.publicThreadSync = null;
+			account.ongoingOperations.delete(sync);
+			account.numberOfOngoingRESTOperations--;
+			endOperation();
+
+			progressCounts.threadEnumerations--;
+			downloadProgresses.delete(progress);
+			updateProgressOutput();
 		}
-
-		ongoingMap.delete(channel);
-		account.numberOfOngoingRESTOperations--;
-		endOperation();
-
-		progressCounts.threadEnumerations--;
-		downloadProgresses.delete(progress);
-		updateProgressOutput();
 	}
 
 	async function requestExpressionUploaders(account: Account, cachedGuild: CachedGuild) {
@@ -563,11 +574,13 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 		const restOptions = mergeOptions(account.restOptions, { signal: abortController.signal });
 
 		const { promise: end, resolve: endOperation } = Promise.withResolvers<void>();
-		const operation: OngoingOperation = {
+		const operation: OngoingExpressionUploaderRequest = {
 			abortController,
 			end,
+			account,
+			guild: cachedGuild,
 		};
-		account.ongoingExpressionUploaderRequests.add(operation);
+		account.ongoingOperations.add(operation);
 		account.numberOfOngoingRESTOperations++;
 
 		try {
@@ -606,7 +619,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 				throw err;
 			}
 		} finally {
-			account.ongoingExpressionUploaderRequests.delete(operation);
+			account.ongoingOperations.delete(operation);
 			account.numberOfOngoingRESTOperations--;
 			endOperation();
 		}
@@ -644,6 +657,84 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 		});
 	}
 
+	async function updateMessageSync(channel: CachedTextLikeChannel | CachedThread, invalidateSync?: boolean) {
+		const accountsWithReadPermission = (channel.parent ?? channel).accountsWithReadPermission;
+		if (invalidateSync || accountsWithReadPermission.length === 0) {
+			channel.lastMessageID = null;
+			channel.areMessagesSynced = false;
+		}
+
+		const options = channel.options;
+		if (
+			!allReady ||
+			channel.pendingMessageSyncUpdate ||
+			!(options.archiveMessages && options.requestPastMessages)
+		) return;
+		channel.pendingMessageSyncUpdate = true;
+
+		if (channel.lastSyncedMessageID === undefined) {
+			// If the request returns `undefined` (meaning that the channel isn't in the database),
+			// then there are also no messages from that channel in the database, so we set it to 0.
+			channel.lastSyncedMessageID = await db.request({
+				type: RequestType.GetLastSyncedMessageID,
+				channelID: channel.id,
+				isThread: channel.parent !== null,
+			} satisfies GetLastSyncedMessageIDRequest) ?? 0n;
+		}
+		if (channel.lastMessageID !== null) {
+			channel.areMessagesSynced = channel.lastSyncedMessageID >= channel.lastMessageID;
+		} else {
+			channel.areMessagesSynced = false;
+		}
+
+		if (channel.parent !== null) {
+			deleteThreadIfUseless(channel);
+		}
+
+		if (!channel.areMessagesSynced && channel.messageSync === null && accountsWithReadPermission.length > 0) {
+			syncMessages(getLeastRESTOccupiedAccount(accountsWithReadPermission)!, channel);
+			channel.pendingMessageSyncUpdate = false;
+		} else if (channel.messageSync !== null && !accountsWithReadPermission.includes(channel.messageSync.account)) {
+			channel.messageSync.abortController.abort();
+			await channel.messageSync.end;
+			channel.pendingMessageSyncUpdate = false;
+			updateMessageSync(channel);
+		}
+	}
+
+	async function updatePublicThreadSync(channel: CachedTextLikeChannel, invalidateSync = false) {
+		if (invalidateSync || channel.accountsWithReadPermission.length === 0) {
+			channel.arePublicThreadsSynced = false;
+		}
+
+		if (
+			!allReady ||
+			channel.pendingPublicThreadSyncUpdate ||
+			channel.type === DT.ChannelType.GuildVoice ||
+			channel.type === DT.ChannelType.GuildStageVoice ||
+			!channel.options.archiveThreads ||
+			!channel.options.requestArchivedThreads
+		) return;
+
+		if (!channel.arePublicThreadsSynced && channel.publicThreadSync === null && channel.accountsWithReadPermission.length > 0) {
+			syncArchivedThreads(getLeastRESTOccupiedAccount(channel.accountsWithReadPermission)!, channel, ArchivedThreadListType.Public);
+		} else if (channel.publicThreadSync !== null && !channel.accountsWithReadPermission.includes(channel.publicThreadSync.account)) {
+			channel.pendingPublicThreadSyncUpdate = true;
+			channel.publicThreadSync.abortController.abort();
+			await channel.publicThreadSync.end;
+			channel.pendingPublicThreadSyncUpdate = false;
+			updatePublicThreadSync(channel);
+		}
+	}
+
+	async function updateGuildChannelRelatedSyncs(channel: CachedTextLikeChannel, invalidateSync?: boolean) {
+		await channel.guild?.initialSyncPromise;
+		updateMessageSync(channel, invalidateSync);
+		updatePublicThreadSync(channel, invalidateSync);
+		for (const thread of channel.threads.values()) {
+			updateMessageSync(thread, invalidateSync);
+		}
+	}
 
 	// GATEWAY
 
@@ -674,12 +765,16 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 	 * Updates the account sets in the cached channel object and aborts syncs for accounts which lost
 	 * permission.
 	 */
-	function updateGuildChannelPermissions(cachedChannel: CachedTextLikeChannel) {
-		const accountWithReadPermExisted = cachedChannel.accountsWithReadPermission.size > 0;
-		const accountWithManagePermExisted = cachedChannel.accountsWithManageThreadsPermission.size > 0;
-		const accountsThatLostReadPermission = new Set<Account>();
-		const accountsThatLostManageThreadsPermission = new Set<Account>();
+	function updateGuildChannelPermissions(cachedChannel: CachedTextLikeChannel, oldPermissionOverwrites?: CachedPermissionOverwrites) {
+		if (
+			oldPermissionOverwrites !== undefined &&
+			areMapsEqual(cachedChannel.permissionOverwrites, oldPermissionOverwrites, (a, b) => a.allow === b.allow && a.deny === b.deny)
+		) {
+			return;
+		}
 
+		cachedChannel.accountsWithReadPermission.length = 0;
+		cachedChannel.accountsWithManageThreadsPermission.length = 0;
 		for (const [account, accountData] of cachedChannel.guild!.accountData.entries()) {
 			const permissions = computeChannelPermissions(account, cachedChannel.guild!, cachedChannel, accountData);
 			const implicitlyDenied =
@@ -695,64 +790,45 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 			const hasManageThreadsPermission = !implicitlyDenied && (permissions & DT.Permission.ManageThreads) !== 0n;
 
 			if (hasReadPermission) {
-				cachedChannel.accountsWithReadPermission.add(account);
-				account.references.add(cachedChannel.accountsWithReadPermission);
-			} else if (cachedChannel.accountsWithReadPermission.has(account)) {
-				cachedChannel.accountsWithReadPermission.delete(account);
-				account.references.delete(cachedChannel.accountsWithReadPermission);
-				accountsThatLostReadPermission.add(account);
+				cachedChannel.accountsWithReadPermission.push(account);
 			}
-
 			if (hasManageThreadsPermission) {
-				cachedChannel.accountsWithManageThreadsPermission.add(account);
-				account.references.add(cachedChannel.accountsWithManageThreadsPermission);
-			} else if (cachedChannel.accountsWithReadPermission.has(account)) {
-				cachedChannel.accountsWithManageThreadsPermission.delete(account);
-				account.references.delete(cachedChannel.accountsWithManageThreadsPermission);
-				accountsThatLostManageThreadsPermission.add(account);
+				cachedChannel.accountsWithManageThreadsPermission.push(account);
 			}
 		}
 
-		if (cachedChannel.options.archiveMessages && cachedChannel.options.requestPastMessages) {
-			// Abort all message syncs and switch to new account if possible
-			for (const account of accountsThatLostReadPermission) {
-				for (const sync of account.ongoingMessageSyncs.get(cachedChannel)?.values() ?? []) {
-					sync.abortController.abort();
-					const newAccount = getLeastRESTOccupiedAccount(cachedChannel.accountsWithReadPermission);
-					if (newAccount !== undefined) {
-						syncMessages(newAccount, sync.channel);
-					}
-				}
-			}
-			// Abort all private thread list and private thread message syncs and switch to new account if possible
-			for (const account of accountsThatLostManageThreadsPermission) {
-				account.ongoingPrivateThreadListSyncs.get(cachedChannel)?.abortController.abort();
-				const newAccount = getLeastRESTOccupiedAccount(cachedChannel.accountsWithManageThreadsPermission);
-				if (newAccount) {
-					// TODO: Switch thread enumeration to the other account
-					log.error?.("The archiver was supposed to switch a thread enumeration process to another account due to losing permissions but this is currently unimplemented. Restart the archiver.");
-				}
-				for (const sync of account.ongoingPrivateThreadMessageSyncs.get(cachedChannel)?.values() ?? []) {
-					sync.abortController.abort();
-					const newAccount = getLeastRESTOccupiedAccount(cachedChannel.accountsWithManageThreadsPermission);
-					if (newAccount !== undefined) {
-						syncMessages(newAccount, sync.channel);
-					}
-				}
+		updateGuildChannelRelatedSyncs(cachedChannel);
+	}
+
+	function deleteThread(thread: CachedThread) {
+		thread.parent.threads.delete(thread.id);
+		thread.messageSync?.abortController.abort();
+	}
+	function deleteThreadIfUseless(thread: CachedThread) {
+		// If this is an archived (closed) thread with all of its messages synced, then we no longer need it in memory.
+		if (
+			!thread.active && (
+				thread.areMessagesSynced ||
+				!thread.options.archiveMessages ||
+				!thread.options.requestPastMessages
+			)
+		) {
+			deleteThread(thread);
+		}
+	}
+	function deleteChannel(channel: CachedChannel) {
+		channel.guild?.channels.delete(channel.id);
+		if (channel.textLike) {
+			channel.messageSync?.abortController.abort();
+			for (const thread of channel.threads.values()) {
+				deleteThread(thread);
 			}
 		}
-
-		if (cachedChannel.hasThreads && allReady) {
-			// Active threads are synced when we receive the THREAD_LIST_SYNC dispatch event.
-			if (!accountWithReadPermExisted && cachedChannel.accountsWithReadPermission.size > 0) {
-				log.verbose?.(`We gained permission to read channel #${cachedChannel.name} (${cachedChannel.id}).`);
-				syncMessages(getLeastRESTOccupiedAccount(cachedChannel.accountsWithReadPermission)!, cachedChannel);
-				syncAllArchivedThreads(getLeastRESTOccupiedAccount(cachedChannel.accountsWithReadPermission)!, cachedChannel, ArchivedThreadListType.Public);
-			}
-			if (!accountWithManagePermExisted && cachedChannel.accountsWithManageThreadsPermission.size > 0) {
-				log.verbose?.(`We gained permission to manage channel #${cachedChannel.name} (${cachedChannel.id}).`);
-				syncAllArchivedThreads(getLeastRESTOccupiedAccount(cachedChannel.accountsWithManageThreadsPermission)!, cachedChannel, ArchivedThreadListType.Private);
-			}
+	}
+	function deleteGuild(guild: CachedGuild) {
+		guilds.delete(guild.id);
+		for (const channel of guild.channels.values()) {
+			deleteChannel(channel);
 		}
 	}
 
@@ -760,7 +836,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 		if (!cachedGuild.options.requestAllMembers) return;
 		log.verbose?.(`Started syncing guild members from ${cachedGuild.name} (${cachedGuild.id}) using ${account.name}.`);
 		cachedGuild.memberUserIDs = new Set();
-		account.ongoingMemberRequests.add(cachedGuild.id);
+		account.ongoingMemberRequestGuildIDs.add(cachedGuild.id);
 		account.numberOfOngoingGatewayOperations++;
 		account.gatewayConnection.sendPayload({
 			op: DT.GatewayOpcode.RequestGuildMembers,
@@ -812,20 +888,23 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 			function getGuildChannel(channelID: string, guildID: string, eventType: DT.DispatchEventName, includeThreads?: false): CachedChannel | undefined;
 			function getGuildChannel(channelID: string, guildID: string, eventType: DT.DispatchEventName, includeThreads?: boolean): CachedChannel | CachedThread | undefined;
 			function getGuildChannel(channelID: string, guildID: string, eventType: DT.DispatchEventName, includeThreads = false): CachedChannel | CachedThread | undefined {
-				const cachedGuild = guilds.get(guildID);
-				if (cachedGuild === undefined) {
-					log.warning?.(`Received a ${eventType} dispatch for a guild channel with ID ${channelID} from an unknown guild with ID ${guildID}.`);
-					return undefined;
-				}
+				const cachedGuild = getGuild(guildID, eventType);
+				if (cachedGuild === undefined) return undefined;
 				const cachedChannel = cachedGuild.channels.get(channelID);
 				if (cachedChannel !== undefined) return cachedChannel;
 				if (!includeThreads) {
-					log.warning?.(`Received a ${eventType} dispatch for an unknown guild channel with ID ${channelID} from the guild with ID ${guildID}.`);
+					log.warning?.(`Received a ${eventType} dispatch for an unknown guild channel with ID ${channelID} belonging to the guild with ID ${guildID}.`);
 					return undefined;
 				}
-				const cachedThread = cachedGuild.activeThreads.get(channelID);
+				let cachedThread;
+				for (const c of cachedGuild.channels.values()) {
+					if (c.textLike) {
+						cachedThread = c.threads.get(channelID);
+						if (cachedThread) break;
+					}
+				}
 				if (cachedThread === undefined) {
-					log.warning?.(`Received a ${eventType} dispatch for an unknown guild channel or thread with ID ${channelID} from the guild with ID ${guildID}.`);
+					log.warning?.(`Received a ${eventType} dispatch for an unknown guild channel or thread with ID ${channelID} belonging to the guild with ID ${guildID}.`);
 					return undefined;
 				}
 				return cachedThread;
@@ -866,11 +945,12 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 
 				const abortController = new AbortController();
 				const { promise: end, resolve: endOperation } = Promise.withResolvers<void>();
-				const operation: OngoingOperation = {
+				const operation: OngoingDispatchHandling = {
 					abortController,
 					end,
+					account,
 				};
-				account.ongoingDispatchHandlers.add(operation);
+				account.ongoingOperations.add(operation);
 
 				try {
 					switch (payload.t) {
@@ -887,124 +967,130 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 						case "GUILD_DELETE": {
 							if (payload.d.unavailable) {
 								onReceivedGuildInfo();
+							} else {
+								// This guild was deleted
+								const cachedGuild = guilds.get(payload.d.id);
+								if (cachedGuild === undefined) break;
+
+								deleteGuild(cachedGuild);
 							}
 							break;
 						}
 
 						case "GUILD_CREATE": {
 							onReceivedGuildInfo();
-							let cachedGuild: CachedGuild;
 							const guild = payload.d;
 							const rolePermissions = new Map(guild.roles.map(r => [r.id, BigInt(r.permissions)]));
 							const ownMember = guild.members.find(m => m.user.id === account.details!.id)!;
 
 							const options = getGuildOptions(config, guild.id);
+							let cachedGuild = guilds.get(guild.id);
 
-							const alreadyCached = guilds.has(guild.id);
-							if (!alreadyCached) {
-								let initialSyncPromise: Promise<Pick<CachedGuild, "missingEmojiUploaders"> | undefined>;
-								if (options.archive) {
-									const files: DownloadArguments[] = [];
-									if (options.downloadServerAssets) {
-										if (guild.icon != null) {
-											const url = getCDNHashURL(`/icons/${guild.id}`, guild.icon, config.mediaConfig.serverIcon, config.mediaConfig.animatedServerIcon);
-											files.push({ url, downloadURL: url });
-										}
-										if (guild.splash != null) {
-											const url = getCDNHashURL(`/splashes/${guild.id}`, guild.splash, config.mediaConfig.serverSplash);
-											files.push({ url, downloadURL: url });
-										}
-										if (guild.discovery_splash != null) {
-											const url = getCDNHashURL(`/discovery-splashes/${guild.id}`, guild.discovery_splash, config.mediaConfig.serverDiscoverySplash);
-											files.push({ url, downloadURL: url });
-										}
-										if (guild.banner != null) {
-											const url = getCDNHashURL(`/banners/${guild.id}`, guild.banner, config.mediaConfig.serverBanner, config.mediaConfig.animatedServerBanner);
-											files.push({ url, downloadURL: url });
-										}
+							let syncPromise: Promise<Pick<CachedGuild, "missingEmojiUploaders"> | undefined>;
+							if (options.archive) {
+								const files: DownloadArguments[] = [];
+								if (options.downloadServerAssets) {
+									if (guild.icon != null) {
+										const url = getCDNHashURL(`/icons/${guild.id}`, guild.icon, config.mediaConfig.serverIcon, config.mediaConfig.animatedServerIcon);
+										files.push({ url, downloadURL: url });
 									}
-									if (options.downloadExpressions) {
-										for (const emoji of guild.emojis) {
-											const url = getCDNEmojiURL(emoji, config.mediaConfig.serverEmoji, config.mediaConfig.animatedServerEmoji);
-											files.push({ url, downloadURL: url });
-										}
+									if (guild.splash != null) {
+										const url = getCDNHashURL(`/splashes/${guild.id}`, guild.splash, config.mediaConfig.serverSplash);
+										files.push({ url, downloadURL: url });
 									}
-
-
-									// Will be awaited below.
-									initialSyncPromise = doDownloadTransaction(abortController.signal, files, async () => {
-										const guildSnapshotTiming = {
-											timestamp,
-											realtime: false,
-										};
-
-										db.request({
-											type: RequestType.SyncDeletedGuildSubObjects,
-											guildID: BigInt(guild.id),
-											channelIDs: new Set(guild.channels.map(c => BigInt(c.id))),
-											roleIDs: new Set(guild.roles.map(r => BigInt(r.id))),
-											emojiIDs: new Set(guild.emojis.map(e => BigInt(e.id))),
-											timing: guildSnapshotTiming,
-										});
-
-										db.request({
-											type: RequestType.AddGuildSnapshot,
-											guild,
-											timing: guildSnapshotTiming,
-										});
-
-										for (const emoji of guild.emojis) {
-											db.request({
-												type: RequestType.AddGuildEmojiSnapshot,
-												emoji,
-												guildID: guild.id,
-												timing: guildSnapshotTiming,
-											});
-										}
-										const ret = Promise.all([
-											db.request({
-												type: RequestType.CheckForMissingEmojiUploaders,
-												guildID: guild.id,
-											}),
-										]);
-
-										for (const role of guild.roles) {
-											db.request({
-												type: RequestType.AddRoleSnapshot,
-												role,
-												guildID: guild.id,
-												timing: guildSnapshotTiming,
-											});
-										}
-
-										for (const channel of guild.channels) {
-											db.request({
-												type: RequestType.AddChannelSnapshot,
-												channel: Object.assign(channel, { guild_id: guild.id }),
-												timing: guildSnapshotTiming,
-											});
-										}
-
-										for (const thread of guild.threads) {
-											db.request({
-												type: RequestType.AddThreadSnapshot,
-												thread: Object.assign(thread, { guild_id: guild.id }),
-												timing: guildSnapshotTiming,
-											});
-										}
-
-										const [
-											missingEmojiUploaders,
-										] = await ret;
-										return {
-											missingEmojiUploaders,
-										};
-									});
-								} else {
-									// This guild won't be archived
-									initialSyncPromise = Promise.resolve(undefined);
+									if (guild.discovery_splash != null) {
+										const url = getCDNHashURL(`/discovery-splashes/${guild.id}`, guild.discovery_splash, config.mediaConfig.serverDiscoverySplash);
+										files.push({ url, downloadURL: url });
+									}
+									if (guild.banner != null) {
+										const url = getCDNHashURL(`/banners/${guild.id}`, guild.banner, config.mediaConfig.serverBanner, config.mediaConfig.animatedServerBanner);
+										files.push({ url, downloadURL: url });
+									}
+								}
+								if (options.downloadExpressions) {
+									for (const emoji of guild.emojis) {
+										const url = getCDNEmojiURL(emoji, config.mediaConfig.serverEmoji, config.mediaConfig.animatedServerEmoji);
+										files.push({ url, downloadURL: url });
+									}
 								}
 
+
+								// Will be awaited below.
+								syncPromise = doDownloadTransaction(abortController.signal, files, async () => {
+									const guildSnapshotTiming = {
+										timestamp,
+										realtime: false,
+									};
+
+									// TODO: sync closed/deleted threads
+									db.request({
+										type: RequestType.SyncDeletedGuildSubObjects,
+										guildID: BigInt(guild.id),
+										channelIDs: new Set(guild.channels.map(c => BigInt(c.id))),
+										roleIDs: new Set(guild.roles.map(r => BigInt(r.id))),
+										emojiIDs: new Set(guild.emojis.map(e => BigInt(e.id))),
+										timing: guildSnapshotTiming,
+									});
+
+									db.request({
+										type: RequestType.AddGuildSnapshot,
+										guild,
+										timing: guildSnapshotTiming,
+									});
+
+									for (const emoji of guild.emojis) {
+										db.request({
+											type: RequestType.AddGuildEmojiSnapshot,
+											emoji,
+											guildID: guild.id,
+											timing: guildSnapshotTiming,
+										});
+									}
+									const ret = Promise.all([
+										db.request({
+											type: RequestType.CheckForMissingEmojiUploaders,
+											guildID: guild.id,
+										}),
+									]);
+
+									for (const role of guild.roles) {
+										db.request({
+											type: RequestType.AddRoleSnapshot,
+											role,
+											guildID: guild.id,
+											timing: guildSnapshotTiming,
+										});
+									}
+
+									for (const channel of guild.channels) {
+										db.request({
+											type: RequestType.AddChannelSnapshot,
+											channel: Object.assign(channel, { guild_id: guild.id }),
+											timing: guildSnapshotTiming,
+										});
+									}
+
+									for (const thread of guild.threads) {
+										db.request({
+											type: RequestType.AddThreadSnapshot,
+											thread: Object.assign(thread, { guild_id: guild.id }),
+											timing: guildSnapshotTiming,
+										});
+									}
+
+									const [
+										missingEmojiUploaders,
+									] = await ret;
+									return {
+										missingEmojiUploaders,
+									};
+								});
+							} else {
+								// This guild won't be archived
+								syncPromise = Promise.resolve(undefined);
+							}
+
+							if (cachedGuild === undefined) {
 								cachedGuild = {
 									id: guild.id,
 									options,
@@ -1014,45 +1100,72 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 									accountData: new Map(),
 									accountsWithExpressionPermission: new Set(),
 									channels: new Map(),
-									activeThreads: new Map(),
 									memberUserIDs: null,
 									missingEmojiUploaders: undefined,
-									initialSyncPromise: initialSyncPromise.then(() => undefined),
+									initialSyncPromise: syncPromise.then(() => undefined),
 								};
 								// Prevent this promise from causing an unhandled rejection while
 								// propagating the error to awaiting consumers. Any error in this promise
 								// will also be encountered by the `await` expression below.
 								cachedGuild.initialSyncPromise.catch(() => {});
-								cachedGuild.channels = new Map(
-									payload.d.channels.map(c => [c.id, createCachedChannel(c, config, cachedGuild)]),
-								);
 								guilds.set(guild.id, cachedGuild);
-								for (const thread of guild.threads) {
-									const parent = cachedGuild.channels.get(thread.parent_id) as CachedTextLikeChannel;
-									cachedGuild.activeThreads.set(thread.id, createCachedThread(thread, config, parent));
-								}
-
-								cachedGuild.accountData.set(account, {
-									roles: new Set(ownMember.roles),
-									guildPermissions: 0n, // will be computed below
-								});
-								updateGuildPermissions(cachedGuild);
-
-								updateProgressOutput();
-
-								const syncResult = await initialSyncPromise;
-								cachedGuild.missingEmojiUploaders = syncResult?.missingEmojiUploaders;
-								log.verbose?.(`${options.archive ? "Synced" : "Received"} basic guild info for ${cachedGuild.name} (${cachedGuild.id}) using ${account.name}.`);
+							} else {
+								cachedGuild.name = guild.name;
+								cachedGuild.ownerID = guild.owner_id;
+								cachedGuild.rolePermissions = rolePermissions;
 							}
 
-							// TODO: Sync when a new guild appears. This should happen after awaiting the initial sync.
+							for (const channel of guild.channels) {
+								const cachedChannel = cachedGuild.channels.get(channel.id);
+								cacheChannel(cachedChannel, channel, config, true, cachedGuild);
+							}
+							for (const thread of guild.threads) {
+								if (thread.type === DT.ChannelType.PrivateThread) continue;
+								const cachedParent = cachedGuild.channels.get(thread.parent_id) as CachedTextLikeChannel;
+								const cachedThread = cachedParent.threads.get(thread.id);
+								cacheThread(cachedThread, thread, config, cachedParent, true);
+							}
 
+							cachedGuild.accountData.set(account, {
+								roles: new Set(ownMember.roles),
+								guildPermissions: 0n, // will be computed below
+							});
+							updateGuildPermissions(cachedGuild);
+
+							{
+								const channelIDs = new Set(guild.channels.map(c => c.id));
+								const threadIDs = new Set(guild.threads.map(t => t.id));
+								for (const [channelID, cachedChannel] of cachedGuild.channels.entries()) {
+									if (!channelIDs.has(channelID)) {
+										// This channel was deleted.
+										deleteChannel(cachedChannel);
+									} else if (cachedChannel.textLike && cachedChannel.accountsWithReadPermission.includes(account)) {
+										for (const [threadID, cachedThread] of cachedChannel.threads) {
+											if (!threadIDs.has(threadID)) {
+												// This thread was archived (closed) or deleted.
+												// We don't know which, so we assume that it was archived (closed).
+												cachedThread.active = false;
+												deleteThreadIfUseless(cachedThread);
+											}
+										}
+									}
+								}
+							}
+
+
+							updateProgressOutput();
+
+							const syncResult = await syncPromise;
+							cachedGuild.missingEmojiUploaders = syncResult?.missingEmojiUploaders;
+							log.verbose?.(`${options.archive ? "Synced" : "Received"} basic guild info for ${cachedGuild.name} (${cachedGuild.id}) using ${account.name}.`);
 							break;
 						}
 						case "GUILD_UPDATE": {
-							// BUG: This assumes that no permission changes are caused by this event. This could happen if the owner changed.
 							const cachedGuild = getGuild(payload.d.id, payload.t);
 							if (cachedGuild === undefined) break;
+
+							updateGuildPermissions(cachedGuild);
+
 							if (cachedGuild.options.storeServerEdits) {
 								await cachedGuild.initialSyncPromise;
 								await db.transaction(async () => {
@@ -1077,8 +1190,6 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 							if (payload.t === "GUILD_ROLE_CREATE") {
 								cachedGuild.rolePermissions.set(payload.d.role.id, perms);
 							} else if (cachedGuild.rolePermissions.get(payload.d.role.id) !== perms) {
-								// TODO: Recompute permissions only for accounts with the role
-								// (also for role deletion and role list updates)
 								log.verbose?.(`Role with ID ${payload.d.role.id} from guild ${cachedGuild.name} (${payload.d.guild_id}) was updated.`);
 								cachedGuild.rolePermissions.set(payload.d.role.id, perms);
 								updateGuildPermissions(cachedGuild);
@@ -1159,7 +1270,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 							}
 							if (isLast) {
 								log.verbose?.(`Finished syncing guild members from ${cachedGuild.name} (${cachedGuild.id}) using ${account.name}.`);
-								account.ongoingMemberRequests.delete(payload.d.guild_id);
+								account.ongoingMemberRequestGuildIDs.delete(payload.d.guild_id);
 								account.numberOfOngoingGatewayOperations--;
 
 								db.transaction(async () => {
@@ -1223,6 +1334,15 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 							const cachedGuild = getGuild(member.guild_id, payload.t);
 							if (cachedGuild === undefined) break;
 
+							if (member.user.id === account.details!.id) {
+								// This account was removed from the guild.
+								// The cached guild is kept in memory forever even if all accounts leave
+								// the guild to prevent multiple syncs from happening at the same time if
+								// some account joins the guild, but that doesn't really matter.
+								cachedGuild.accountData.delete(account);
+								updateGuildPermissions(cachedGuild);
+							}
+
 							if (cachedGuild.options.storeMemberEvents) {
 								await cachedGuild.initialSyncPromise;
 								await db.transaction(async () => {
@@ -1243,14 +1363,15 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 							if (DT.isGuildChannel(channel)) {
 								cachedGuild = getGuild(channel.guild_id, payload.t);
 								if (cachedGuild === undefined) break;
-							} else if (!DT.isDirectChannel(channel)) {
+								if (cachedGuild.channels.has(channel.id)) break;
+							} else if (DT.isDirectChannel(channel)) {
+								if (directChannels.has(channel.id)) break;
+							} else {
 								const unknownChannel: any = channel satisfies never;
 								log.warning?.(`Received a CHANNEL_CREATE event for a channel with ID ${unknownChannel.id} with an unknown type ${unknownChannel.type}.`);
 							}
-							const cachedChannel = createCachedChannel(channel, config, cachedGuild);
-							if (cachedGuild !== undefined) {
-								cachedGuild.channels.set(channel.id, cachedChannel);
-							}
+
+							const cachedChannel = cacheChannel(undefined, channel, config, true, cachedGuild);
 
 							// There's no need to sync the messages since there are no messages in a newly-created channel
 
@@ -1268,22 +1389,15 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 						}
 
 						case "CHANNEL_UPDATE": {
-							const cachedChannel = getChannel(payload.d, payload.t);
+							let cachedChannel = getChannel(payload.d, payload.t);
 							if (cachedChannel === undefined) break;
 							const channel = payload.d;
 
 							if (isGuildTextLikeChannel(channel)) {
-								const cachedGTLChannel = cachedChannel as CachedTextLikeChannel;
-								cachedGTLChannel.name = channel.name!;
-
-								const permissionOverwrites = new Map(channel.permission_overwrites?.map(o => [o.id, { allow: BigInt(o.allow), deny: BigInt(o.deny) }]));
-								const didPermsChange = areMapsEqual(cachedGTLChannel.permissionOverwrites, cachedGTLChannel.permissionOverwrites, (a, b) => a.allow === b.allow && a.deny === b.deny);
-								if (didPermsChange) {
-									log.verbose?.(`Permissions for channel #${cachedGTLChannel.name} (${cachedGTLChannel.id}) changed.`);
-
-									cachedGTLChannel.permissionOverwrites = permissionOverwrites;
-									updateGuildChannelPermissions(cachedGTLChannel);
-								}
+								cachedChannel = cachedChannel as CachedTextLikeChannel;
+								const oldPermissions = cachedChannel.permissionOverwrites;
+								cachedChannel = cacheChannel(cachedChannel, channel, config, false, cachedChannel.guild);
+								updateGuildChannelPermissions(cachedChannel, oldPermissions);
 							}
 
 							if (cachedChannel.options.storeChannelEdits) {
@@ -1299,37 +1413,96 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 							break;
 						}
 
+						case "CHANNEL_DELETE": {
+							const channel = payload.d;
+							const cachedChannel = getChannel(channel, payload.t);
+							if (cachedChannel === undefined) break;
+
+							deleteChannel(cachedChannel);
+
+							if (cachedChannel.options.storeChannelEdits) {
+								await cachedChannel.guild?.initialSyncPromise;
+								await db.transaction(async () => {
+									db.request({
+										type: RequestType.MarkChannelAsDeleted,
+										id: channel.id,
+										timing,
+									});
+								});
+							}
+							break;
+						}
+
+						case "THREAD_CREATE":
+						case "THREAD_UPDATE":
+						{
+							const thread = payload.d;
+							if (thread.type === DT.ChannelType.PrivateThread) break;
+							const cachedParent = getGuildChannel(thread.parent_id, thread.guild_id, payload.t) as CachedTextLikeChannel | undefined;
+							if (cachedParent === undefined) break;
+							let cachedThread = cachedParent.threads.get(thread.id);
+
+							if (payload.t === "THREAD_UPDATE" && cachedThread === undefined) {
+								log.warning?.(`Received a ${payload.t} dispatch for an unknown thread with ID ${thread.id}.`);
+								break;
+							}
+							cachedThread = cacheThread(cachedThread, thread, config, cachedParent, false);
+
+							if (cachedThread.options.storeChannelEdits) {
+								await cachedParent.guild!.initialSyncPromise;
+								await db.transaction(async () => {
+									db.request({
+										type: RequestType.AddThreadSnapshot,
+										thread,
+										timing: (payload.t === "THREAD_CREATE" && payload.d.newly_created) ? null : timing,
+									});
+								});
+							}
+							break;
+						}
+						case "THREAD_DELETE": {
+							if (payload.d.type === DT.ChannelType.PrivateThread) break;
+							const cachedParent = getGuildChannel(payload.d.parent_id, payload.d.guild_id, payload.t) as CachedTextLikeChannel | undefined;
+							if (cachedParent === undefined) break;
+							const cachedThread = cachedParent.threads.get(payload.d.id);
+							if (cachedThread === undefined) break;
+
+							deleteThread(cachedThread);
+
+							if (cachedThread.options.storeChannelEdits) {
+								await db.transaction(async () => {
+									db.request({
+										type: RequestType.MarkThreadAsDeleted,
+										id: payload.d.id,
+										timing,
+									});
+								});
+							}
+							break;
+						}
 						// It seems that, for user accounts, the READY event only contains joined active threads and this event is sent later with the non-joined but active threads.
 						// This event is sent (containing all active threads) when the user gains access to a channel if and only if there are active threads in that channel.
 						case "THREAD_LIST_SYNC": {
+							// TODO: sync closed/deleted threads
 							const threadsToArchive: DT.Thread[] = [];
 
 							const cachedGuild = getGuild(payload.d.guild_id, payload.t);
 							if (cachedGuild === undefined) break;
 
 							for (const thread of payload.d.threads) {
-								const cachedChannel = cachedGuild.channels.get(thread.parent_id) as CachedTextLikeChannel | undefined;
-								if (cachedChannel === undefined) {
+								if (thread.type === DT.ChannelType.PrivateThread) continue;
+								const cachedParent = cachedGuild.channels.get(thread.parent_id) as CachedTextLikeChannel | undefined;
+								if (cachedParent === undefined) {
 									log.warning?.(`Received a THREAD_LIST_SYNC event for an unknown channel with ID ${thread.parent_id}.`);
 									break;
 								}
 
-								const threadInfo = createCachedThread(thread, config, cachedChannel);
+								let cachedThread = cachedParent.threads.get(thread.id);
+								cachedThread = cacheThread(cachedThread, thread, config, cachedParent, false);
 
-								if (threadInfo.options.archiveThreads) {
+								if (cachedThread.options.archiveThreads) {
 									threadsToArchive.push(thread);
-								}
-								cachedGuild.activeThreads.set(threadInfo.id, threadInfo);
-
-								sync:
-								if (allReady && threadInfo.options.archiveThreads && threadInfo.options.archiveMessages && threadInfo.options.requestPastMessages) {
-									for (const account of cachedGuild.accountData.keys()) {
-										if (account.ongoingMessageSyncs.get(cachedChannel)?.has(thread.id)) {
-											// The thread is already being synced. Ignore it.
-											break sync;
-										}
-									}
-									syncMessages(getLeastRESTOccupiedAccount(cachedChannel.accountsWithReadPermission)!, threadInfo);
+									updateMessageSync(cachedThread);
 								}
 							}
 
@@ -1346,29 +1519,12 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 							break;
 						}
 
-						case "CHANNEL_DELETE": {
-							const channel = payload.d;
-							const cachedChannel = getChannel(channel, payload.t);
-							if (cachedChannel === undefined) break;
-
-							if (cachedChannel.options.storeChannelEdits) {
-								await cachedChannel.guild?.initialSyncPromise;
-								await db.transaction(async () => {
-									db.request({
-										type: RequestType.MarkChannelAsDeleted,
-										id: channel.id,
-										timing,
-									});
-								});
-							}
-							break;
-						}
-
 						case "MESSAGE_CREATE":
 						case "MESSAGE_UPDATE":
 						{
-							const cachedChannel = getChannelOrThreadByIDs(payload.d.channel_id, payload.d.guild_id, payload.t);
+							const cachedChannel = getChannelOrThreadByIDs(payload.d.channel_id, payload.d.guild_id, payload.t) as CachedTextLikeChannel | CachedThread | undefined;
 							if (cachedChannel === undefined) break;
+							const message = payload.d;
 
 							if (
 								payload.t === "MESSAGE_CREATE" ?
@@ -1379,7 +1535,41 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 								// receive a MESSAGE_CREATE event after the GUILD_CREATE or READY
 								// event but before the guild's data is in the database.
 								await cachedChannel.guild?.initialSyncPromise;
-								await archiveMessageSnapshot(account, payload.d, cachedChannel as CachedTextLikeChannel, timestamp, abortController.signal, false);
+								try {
+									await archiveMessageSnapshot(
+										account,
+										message,
+										cachedChannel,
+										timestamp,
+										realtime,
+										payload.t === "MESSAGE_CREATE",
+										abortController.signal,
+										false,
+									);
+								} catch (err) {
+									if (err instanceof ExpectedError) {
+										console.warn(`Couldn't archive a new or newly edited message. This may be due to losing the ability to access the message (for example, if it was deleted). Error: ${err.toString()}`);
+									} else {
+										throw err;
+									}
+								}
+								if (
+									payload.t === "MESSAGE_CREATE" &&
+									cachedChannel.areMessagesSynced &&
+									cachedChannel.lastSyncedMessageID !== undefined
+								) {
+									const lastSyncedMessageID = BigInt(message.id);
+									// Only update if the ID increased to prevent message syncing and MESSAGE_CREATE handling from interfering.
+									if (lastSyncedMessageID > cachedChannel.lastSyncedMessageID) {
+										cachedChannel.lastSyncedMessageID = lastSyncedMessageID;
+									}
+									await db.request({
+										type: RequestType.SetLastSyncedMessageID,
+										channelID: cachedChannel.id,
+										isThread: cachedChannel.parent !== null,
+										lastSyncedMessageID: cachedChannel.lastSyncedMessageID,
+									} satisfies SetLastSyncedMessageIDRequest);
+								}
 							}
 							break;
 						}
@@ -1476,17 +1666,18 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 						throw err;
 					}
 				} finally {
-					account.ongoingDispatchHandlers.delete(operation);
+					account.ongoingOperations.delete(operation);
 					endOperation();
 				}
 			});
 
 			gatewayConnection.on("sessionLost", () => {
-				log.warning?.(`Gateway session lost for ${account.name}. Some events may have been missed so it's necessary to resync.`);
+				log.warning?.(`Gateway session lost for ${account.name}. Some events may have been missed, so it's necessary to resync.`);
+
 				// Handle interrupted member requests
-				account.numberOfOngoingGatewayOperations -= account.ongoingMemberRequests.size;
-				for (const guildID of account.ongoingMemberRequests) {
-					account.ongoingMemberRequests.delete(guildID);
+				account.numberOfOngoingGatewayOperations -= account.ongoingMemberRequestGuildIDs.size;
+				for (const guildID of account.ongoingMemberRequestGuildIDs) {
+					account.ongoingMemberRequestGuildIDs.delete(guildID);
 
 					const guild = guilds.get(guildID);
 					if (guild !== undefined) {
@@ -1546,35 +1737,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 				account.gatewayConnection.destroy();
 
 				const endPromises = [];
-				for (const set of account.ongoingMessageSyncs.values()) {
-					for (const { abortController, end } of set.values()) {
-						endPromises.push(end);
-						abortController.abort();
-					}
-				}
-				for (const set of account.ongoingPrivateThreadMessageSyncs.values()) {
-					for (const { abortController, end } of set.values()) {
-						endPromises.push(end);
-						abortController.abort();
-					}
-				}
-				for (const { abortController, end } of account.ongoingPublicThreadListSyncs.values()) {
-					endPromises.push(end);
-					abortController.abort();
-				}
-				for (const { abortController, end } of account.ongoingPrivateThreadListSyncs.values()) {
-					endPromises.push(end);
-					abortController.abort();
-				}
-				for (const { abortController, end } of account.ongoingJoinedPrivateThreadListSyncs.values()) {
-					endPromises.push(end);
-					abortController.abort();
-				}
-				for (const { abortController, end } of account.ongoingDispatchHandlers.values()) {
-					endPromises.push(end);
-					abortController.abort();
-				}
-				for (const { abortController, end } of account.ongoingExpressionUploaderRequests.values()) {
+				for (const { abortController, end } of account.ongoingOperations) {
 					endPromises.push(end);
 					abortController.abort();
 				}
@@ -1600,17 +1763,9 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 				disconnect,
 
 				numberOfOngoingRESTOperations: 0,
-				ongoingMessageSyncs: new Map(),
-				ongoingPrivateThreadMessageSyncs: new Map(),
-				ongoingPublicThreadListSyncs: new Map(),
-				ongoingPrivateThreadListSyncs: new Map(),
-				ongoingJoinedPrivateThreadListSyncs: new Map(),
-				ongoingExpressionUploaderRequests: new Set(),
-
 				numberOfOngoingGatewayOperations: 0,
-				ongoingMemberRequests: new Set(),
-
-				ongoingDispatchHandlers: new Set(),
+				ongoingOperations: new Set(),
+				ongoingMemberRequestGuildIDs: new Set(),
 
 				references: new Set(),
 			};
@@ -1672,7 +1827,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 		if (err === abortError) {
 			log.verbose?.(`Connection of ${accountName} was aborted.`);
 		} else {
-			log.error?.(`Couldn't connect ${accountName}. ${(err as Error)}`);
+			log.error?.(`Couldn't connect ${accountName}. Error: ${(err as Error)}`);
 		}
 	})));
 
@@ -1700,26 +1855,9 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 				requestExpressionUploaders(getLeastRESTOccupiedAccount(guild.accountsWithExpressionPermission)!, guild);
 			}
 
-			for (const thread of guild.activeThreads.values()) {
-				// There should always be an account with read permission since otherwise we wouldn't
-				// be able to see the thread.
-				syncMessages(getLeastRESTOccupiedAccount(thread.parent.accountsWithReadPermission)!, thread);
-			}
-
 			for (const channel of guild.channels.values()) {
 				if (!channel.textLike) continue;
-
-				if (channel.options.archive && channel.accountsWithReadPermission.size > 0) {
-					syncMessages(getLeastRESTOccupiedAccount(channel.accountsWithReadPermission)!, channel);
-
-					if (channel.hasThreads && channel.accountsWithReadPermission.size > 0) {
-						if (channel.accountsWithManageThreadsPermission.size > 0) {
-							syncAllArchivedThreads(getLeastRESTOccupiedAccount(channel.accountsWithManageThreadsPermission)!, channel, ArchivedThreadListType.Private);
-						}
-
-						syncAllArchivedThreads(getLeastRESTOccupiedAccount(channel.accountsWithReadPermission)!, channel, ArchivedThreadListType.Public);
-					}
-				}
+				updateGuildChannelRelatedSyncs(channel);
 			}
 		})();
 	}

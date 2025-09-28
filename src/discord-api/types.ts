@@ -572,7 +572,9 @@ export type Message = {
 	 *
 	 * Irrelevant.
 	 */
-	message_snapshots?: unknown;
+	message_snapshots?: {
+		message: SnapshotMessage;
+	}[];
 	/** The call associated with the message */
 	call?: {
 		/** Array of user object ids that participated in the call */
@@ -582,7 +584,25 @@ export type Message = {
 	};
 	/** Sent with activity invitations */
 	activity_instance?: unknown;
+	/** The message's soundboard sounds */
+	soundboard_sounds?: unknown[];
 };
+
+type SnapshotMessageKeys =
+	"content" |
+	"timestamp" |
+	"edited_timestamp" |
+	"mentions" |
+	"mention_roles" |
+	"attachments" |
+	"embeds" |
+	"type" |
+	"flags" |
+	"components" |
+	"resolved" |
+	"sticker_items" |
+	"soundboard_sounds";
+export type SnapshotMessage = Pick<Message, SnapshotMessageKeys> & Partial<Record<Exclude<keyof Message, SnapshotMessageKeys>, never>>;
 
 //#endregion
 
@@ -803,7 +823,7 @@ type TextChannelFields = {
 	 * The ID of the last message sent in this channel (or thread for guild forum or guild media
 	 * channels) (may not point to an existing or valid message or thread)
 	 */
-	last_message_id: string | null;
+	last_message_id?: string | null;
 	/**
 	 * When the last pinned message was pinned
 	 *
@@ -1025,29 +1045,39 @@ export type ThreadMember = {
 	flags: number;
 };
 
-export function isDirectChannel(channel: Channel): channel is DirectChannel {
+export function isDirectChannelType(type: ChannelType): boolean {
 	return (
-		channel.type === ChannelType.DM ||
-		channel.type === ChannelType.GroupDM
+		type === ChannelType.DM ||
+		type === ChannelType.GroupDM
 	);
+}
+export function isGuildChannelType(type: ChannelType): boolean {
+	return (
+		type === ChannelType.GuildText ||
+		type === ChannelType.GuildVoice ||
+		type === ChannelType.GuildCategory ||
+		type === ChannelType.GuildAnnouncement ||
+		type === ChannelType.GuildStageVoice ||
+		type === ChannelType.GuildForum ||
+		type === ChannelType.GuildMedia
+	);
+}
+export function isThreadType(type: ChannelType): boolean {
+	return (
+		type === ChannelType.AnnouncementThread ||
+		type === ChannelType.PublicThread ||
+		type === ChannelType.PrivateThread
+	);
+}
+
+export function isDirectChannel(channel: Channel): channel is DirectChannel {
+	return isDirectChannelType(channel.type);
 }
 export function isGuildChannel(channel: Channel): channel is GuildChannel {
-	return (
-		channel.type === ChannelType.GuildText ||
-		channel.type === ChannelType.GuildVoice ||
-		channel.type === ChannelType.GuildCategory ||
-		channel.type === ChannelType.GuildAnnouncement ||
-		channel.type === ChannelType.GuildStageVoice ||
-		channel.type === ChannelType.GuildForum ||
-		channel.type === ChannelType.GuildMedia
-	);
+	return isGuildChannelType(channel.type);
 }
 export function isThread(channel: Channel): channel is Thread {
-	return (
-		channel.type === ChannelType.AnnouncementThread ||
-		channel.type === ChannelType.PublicThread ||
-		channel.type === ChannelType.PrivateThread
-	);
+	return isThreadType(channel.type);
 }
 
 //#endregion
@@ -1594,6 +1624,12 @@ export type GatewayChannelDispatchChannel = (GuildChannel & GuildIDChannelFields
 export type GatewayChannelCreateDispatchPayload = GatewayGenericDispatchPayload<"CHANNEL_CREATE", GatewayChannelDispatchChannel>;
 export type GatewayChannelUpdateDispatchPayload = GatewayGenericDispatchPayload<"CHANNEL_UPDATE", GatewayChannelDispatchChannel>;
 export type GatewayChannelDeleteDispatchPayload = GatewayGenericDispatchPayload<"CHANNEL_DELETE", GatewayChannelDispatchChannel>;
+export type GatewayThreadCreateDispatchPayload = GatewayGenericDispatchPayload<"THREAD_CREATE", Thread & GuildIDChannelFields & {
+	/** Whether this thread was newly created (not `true` when being added to a private thread) */
+	newly_created?: boolean;
+}>;
+export type GatewayThreadUpdateDispatchPayload = GatewayGenericDispatchPayload<"THREAD_UPDATE", Thread & GuildIDChannelFields>;
+export type GatewayThreadDeleteDispatchPayload = GatewayGenericDispatchPayload<"THREAD_DELETE", Pick<Thread & GuildIDChannelFields, "id" | "guild_id" | "parent_id" | "type">>;
 export type GatewayThreadListSyncDispatchPayload = GatewayGenericDispatchPayload<"THREAD_LIST_SYNC", {
 	guild_id: string;
 	channel_ids: string[];
@@ -1628,7 +1664,10 @@ export type GatewayGuildCreateDispatchPayload = GatewayGenericDispatchPayload<"G
 	version: unknown;
 	inventory_settings: unknown;
 }>;
-export type GatewayGuildUpdateDispatchPayload = GatewayGenericDispatchPayload<"GUILD_UPDATE", Guild>;
+export type GatewayGuildUpdateDispatchPayload = GatewayGenericDispatchPayload<"GUILD_UPDATE", Guild & {
+	// Undocumented
+	guild_id?: unknown;
+}>;
 export type GatewayGuildDeleteDispatchPayload = GatewayGenericDispatchPayload<"GUILD_DELETE", UnavailableGuild>;
 export type GatewayGuildEmojisUpdateDispatchPayload = GatewayGenericDispatchPayload<"GUILD_EMOJIS_UPDATE", {
 	guild_id: string;
@@ -1737,6 +1776,9 @@ export type GatewayDispatchPayload =
 	GatewayChannelCreateDispatchPayload |
 	GatewayChannelUpdateDispatchPayload |
 	GatewayChannelDeleteDispatchPayload |
+	GatewayThreadCreateDispatchPayload |
+	GatewayThreadUpdateDispatchPayload |
+	GatewayThreadDeleteDispatchPayload |
 	GatewayThreadListSyncDispatchPayload |
 	GatewayGuildCreateDispatchPayload |
 	GatewayGuildUpdateDispatchPayload |

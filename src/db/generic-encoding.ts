@@ -23,7 +23,7 @@ export enum ObjectType {
 
 type InputObjectType = {
 	[ObjectType.User]: DT.PartialUser | DT.PartialUserWithMemberField | DT.User;
-	[ObjectType.Guild]: DT.Guild | DT.GatewayGuildCreateDispatchPayload["d"];
+	[ObjectType.Guild]: DT.Guild | DT.GatewayGuildCreateDispatchPayload["d"] | DT.GatewayGuildUpdateDispatchPayload["d"];
 	[ObjectType.Role]: DT.Role;
 	[ObjectType.Member]: DT.GuildMember | DT.GatewayGuildMemberAddDispatchPayload["d"];
 	[ObjectType.Channel]: DT.DirectChannel | DT.GuildChannel | DT.GatewayChannelCreateDispatchPayload["d"];
@@ -51,7 +51,7 @@ enum ValueType {
 	ImageHash,
 	/** Stored as an SQL `BLOB` containing 64-bit big-endian integers and converted to an array of strings */
 	BigIntegerArray,
-	/** Stored as an SQL `INTEGER` containing the Unix timestamp in milliseconds and converted to a string containing the timestamp in the ISO 8601 extended format used by Discord */
+	/** Stored as an SQL `INTEGER` containing the Unix timestamp in milliseconds and converted to a string containing the timestamp in the ISO 8601 format */
 	Timestamp,
 	/** Either a custom or a built-in emoji, stored as an SQL `INTEGER` with the id of the custom emoji or as an SQL `TEXT` with the Unicode emoji and converted to an object of the type `DiscordEmoji` */
 	Emoji,
@@ -198,6 +198,7 @@ const schemas: { [OT in ObjectType]: Schema<InputObjectType[OT]> } = {
 		["joined_at", "ignore"], // not archived
 
 		// Other undocumented ignored fields
+		["guild_id", "ignore"], // not archived (same as id)
 		["moderator_reporting", "ignore"], // not archived
 		["activity_instances", "ignore"], // not archived
 		["hub_type", "ignore"], // not archived
@@ -355,7 +356,7 @@ const schemas: { [OT in ObjectType]: Schema<InputObjectType[OT]> } = {
 		["author", "ignore"], // archived separately
 		["content", ValueType.String],
 		["timestamp", "ignore"],
-		["edited_timestamp", "ignore"],
+		["edited_timestamp", ValueType.Timestamp, NullValue.Null],
 		["tts", ValueType.Boolean],
 		["mention_everyone", "ignore"], // not archived
 		["mentions", "ignore"], // not archived
@@ -704,7 +705,7 @@ function encodeObjectRecursive(objectType: ObjectType, sqlArguments: any, prefix
 	for (const key in object) {
 		if (!schema.knownKeys.has(key)) {
 			extra[key] = object[key];
-			logOnce(`unknown-key type=${objectType} prefix=${prefix} key=${key}`)?.warning?.(`Unknown key "${ObjectType[objectType]}.${key}" for object with ID ${object.id}. No data has been lost; the property will be archived. This might be related to an unsupported Discord feature. Consider updating this application to a newer version.`);
+			logOnce(`unknown-key type=${objectType} prefix=${prefix} key=${key}`)?.warning?.(`Unknown key "${ObjectType[objectType]}.${key}" for object with ID ${object.id}. No data has been lost; the property will be archived. This might be related to an unsupported Discord feature.`);
 		}
 	}
 
