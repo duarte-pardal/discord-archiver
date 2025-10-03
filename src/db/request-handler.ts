@@ -235,7 +235,7 @@ WHERE message_fts_index MATCH :$query;
 UPDATE latest_guild_emoji_snapshots SET user__id = :user__id WHERE id = :id;
 `),
 			checkForMissingUploaders: db.prepare(`
-SELECT 1 FROM latest_guild_emoji_snapshots WHERE _deleted IS NULL AND user__id IS NULL;
+SELECT 1 FROM latest_guild_emoji_snapshots WHERE _guild_id = :_guild_id AND _deleted IS NULL AND user__id IS NULL;
 `),
 		},
 	} as const;
@@ -1021,7 +1021,9 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _deleted IS NULL AND user__id I
 				break;
 			}
 			case RequestType.CheckForMissingEmojiUploaders: {
-				response = objectStatements.guildEmoji.checkForMissingUploaders.get() !== undefined;
+				response = objectStatements.guildEmoji.checkForMissingUploaders.get({
+					_guild_id: req.guildID,
+				}) !== undefined;
 				break;
 			}
 			case RequestType.GetGuildEmojis: {

@@ -3,21 +3,35 @@ import { CachedGuild, CachedTextLikeChannel, CachedThread } from "./cache.js";
 import { RequestResult } from "../discord-api/rest.js";
 
 export type OngoingOperationBase = {
-	abortController: AbortController;
-	end: Promise<void>;
+	abortController?: AbortController;
+	end?: Promise<void>;
 	account: Account;
 };
 export type OngoingMessageSync = OngoingOperationBase & {
+	abortController: AbortController;
 	channel: CachedTextLikeChannel | CachedThread;
 };
 export type OngoingThreadSync = OngoingOperationBase & {
+	abortController: AbortController;
 	channel: CachedTextLikeChannel | CachedThread;
 };
 export type OngoingExpressionUploaderRequest = OngoingOperationBase & {
+	abortController: AbortController;
 	guild: CachedGuild;
 };
-export type OngoingDispatchHandling = OngoingOperationBase;
-export type OngoingOperation = OngoingMessageSync | OngoingThreadSync | OngoingExpressionUploaderRequest | OngoingDispatchHandling;
+export type OngoingMemberListSync = OngoingOperationBase & {
+	guild: CachedGuild;
+	memberIDs: Set<bigint>;
+};
+export type OngoingDispatchHandling = OngoingOperationBase & {
+	abortController: AbortController;
+};
+export type OngoingOperation =
+	OngoingMessageSync |
+	OngoingThreadSync |
+	OngoingExpressionUploaderRequest |
+	OngoingMemberListSync |
+	OngoingDispatchHandling;
 
 export type AccountOptions = {
 	name: string;
@@ -42,12 +56,7 @@ export type Account = AccountOptions & {
 	numberOfOngoingGatewayOperations: number;
 
 	ongoingOperations: Set<OngoingOperation>;
-
-	/** Set of guild IDs */
-	ongoingMemberRequestGuildIDs: Set<string>;
-
-	/** The sets and maps that contain entries with this account as the key, used when disconnecting the account */
-	references: Set<Set<Account> | Map<Account, unknown>>;
+	ongoingMemberSyncs: Set<OngoingMemberListSync>;
 };
 
 export const accounts = new Set<Account>();

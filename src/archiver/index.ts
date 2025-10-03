@@ -16,7 +16,7 @@ import { parseArgs, ParseArgsConfig } from "node:util";
 import log from "../util/log.js";
 import { getTag } from "../discord-api/tag.js";
 import { RateLimiter } from "../util/rate-limiter.js";
-import { CachedTextLikeChannel, CachedGuild, guilds, isGuildTextLikeChannel, CachedThread, CachedChannel, directChannels, cacheThread, cacheChannel, CachedPermissionOverwrites } from "./cache.js";
+import { CachedTextLikeChannel, CachedGuild, guilds, isGuildTextLikeChannel, CachedThread, CachedChannel, directChannels, cacheThread, cacheChannel, CachedPermissionOverwrites, updateGuildProperties } from "./cache.js";
 import { Account, AccountOptions, accounts, getLeastGatewayOccupiedAccount, getLeastRESTOccupiedAccount, OngoingDispatchHandling, OngoingExpressionUploaderRequest } from "./accounts.js";
 import { ArchivedThreadSyncProgress, downloadProgresses, MessageSyncProgress, progressCounts, startProgressDisplay, stopProgressDisplay, updateProgressOutput } from "./progress.js";
 import { DownloadArguments, getCDNEmojiURL, getCDNHashURL, getDownloadTransactionFunction, normalizeURL } from "./files.js";
@@ -584,35 +584,47 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 		account.numberOfOngoingRESTOperations++;
 
 		try {
-			log.verbose?.(`Requesting the uploaders of emojis from ${cachedGuild.name} (${cachedGuild.id}) using ${account.name}.`);
+			log.verbose?.(`Requesting the uploaders of emojis from guild ${cachedGuild.name} (${cachedGuild.id}) using ${account.name}.`);
 			const { response, data } = await account.request<DT.CustomEmoji[]>(`/guilds/${cachedGuild.id}/emojis`, restOptions, true);
 			if (!response.ok) {
-				log.warning?.(`Got ${response.status} ${response.statusText} response while requesting the uploaders of emojis from ${cachedGuild.name} (${cachedGuild.id}) using ${account.name}.`);
+				log.warning?.(`Got ${response.status} ${response.statusText} response while requesting the uploaders of emojis from guild ${cachedGuild.name} (${cachedGuild.id}) using ${account.name}.`);
 				return;
 			}
 			const timestamp = Date.now();
 			const emojisWithUploader = data!.filter((e => e.user != null) as (e: DT.CustomEmoji) => e is (DT.CustomEmoji & { user: DT.PartialUser }));
-			db.transaction(async () => {
-				const userIDs = new Set();
-				for (const emoji of emojisWithUploader) {
-					if (!userIDs.has(emoji.user.id)) {
-						userIDs.add(emoji.user.id);
-						db.request({
-							type: RequestType.AddUserSnapshot,
-							user: emoji.user,
-							timing: {
-								timestamp,
-								realtime: false,
-							},
-						});
-					}
+
+			if (emojisWithUploader.length !== data!.length) {
+				if (emojisWithUploader.length === 0) {
+					log.warning?.(`All emojis are missing an uploaders in the response to ${account.name}. This might happen if the account lost the manage guild expressions permission.`);
+				} else {
+					log.warning?.(`Some emojis are missing an uploaders in the response to ${account.name}.`);
 				}
-				db.request({
-					type: RequestType.UpdateEmojiUploaders,
-					emojis: emojisWithUploader
-						.map(emoji => ({ id: emoji.id, user__id: emoji.user.id })),
+			} else {
+				log.verbose?.(`Successfully obtained the uploaders of emojis from guild ${cachedGuild.name} (${cachedGuild.id}) using ${account.name}.`);
+				cachedGuild.areEmojiUploadersSynced = true;
+
+				db.transaction(async () => {
+					const userIDs = new Set();
+					for (const emoji of emojisWithUploader) {
+						if (!userIDs.has(emoji.user.id)) {
+							userIDs.add(emoji.user.id);
+							db.request({
+								type: RequestType.AddUserSnapshot,
+								user: emoji.user,
+								timing: {
+									timestamp,
+									realtime: false,
+								},
+							});
+						}
+					}
+					db.request({
+						type: RequestType.UpdateEmojiUploaders,
+						emojis: emojisWithUploader
+							.map(emoji => ({ id: emoji.id, user__id: emoji.user.id })),
+					});
 				});
-			});
+			}
 		} catch (err) {
 			if (err !== abortError) {
 				log.error?.("Unexpected error while requesting expression uploaders.");
@@ -736,9 +748,52 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 		}
 	}
 
+	function updateMemberSync(guild: CachedGuild) {
+		if (!guild.options.requestAllMembers) return;
+
+		if (!guild.areMembersSynced && guild.memberSync === null && guild.accountData.size > 0) {
+			syncAllGuildMembers(getLeastGatewayOccupiedAccount(guild.accountData.keys())!, guild);
+		}
+		// Member list requests can't be aborted.
+	}
+
+	async function updateEmojiUploaderSync(guild: CachedGuild) {
+		if (
+			!allReady ||
+			guild.pendingEmojiUploaderSyncUpdate ||
+			!guild.options.requestExpressionUploaders
+		) return;
+
+		if (guild.areEmojiUploadersSynced === undefined) {
+			guild.pendingEmojiUploaderSyncUpdate = true;
+			guild.areEmojiUploadersSynced = !await db.request({
+				type: RequestType.CheckForMissingEmojiUploaders,
+				guildID: guild.id,
+			});
+			guild.pendingEmojiUploaderSyncUpdate = false;
+		}
+
+		if (!guild.areEmojiUploadersSynced && guild.emojiUploaderSync === null && guild.accountsWithExpressionPermission.length > 0) {
+			requestExpressionUploaders(getLeastRESTOccupiedAccount(guild.accountsWithExpressionPermission)!, guild);
+		}
+		// This is a single HTTP request, so it's not worth it to abort if the account loses permission.
+	}
+
+	function updateGuildRelatedSyncs(guild: CachedGuild) {
+		updateMemberSync(guild);
+		updateEmojiUploaderSync(guild);
+		for (const cachedChannel of guild.channels.values()) {
+			if (cachedChannel.textLike) {
+				updateGuildChannelPermissions(cachedChannel);
+			}
+		}
+	}
+
 	// GATEWAY
 
 	function updateGuildPermissions(guild: CachedGuild) {
+		guild.accountsWithExpressionPermission.length = 0;
+
 		for (const [account, accountData] of guild.accountData) {
 			accountData.guildPermissions = computeGuildPermissions(account, guild, accountData.roles);
 
@@ -747,18 +802,11 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 				(DT.Permission.CreateGuildExpressions | DT.Permission.ManageGuildExpressions);
 			const hasEmojiPermission = (accountData.guildPermissions & expressionPermissions) != 0n;
 			if (hasEmojiPermission) {
-				guild.accountsWithExpressionPermission.add(account);
-				account.references.add(guild.accountsWithExpressionPermission);
-			} else if (guild.accountsWithExpressionPermission.has(account)) {
-				guild.accountsWithExpressionPermission.delete(account);
-				account.references.delete(guild.accountsWithExpressionPermission);
+				guild.accountsWithExpressionPermission.push(account);
 			}
 		}
-		for (const cachedChannel of guild.channels.values()) {
-			if (cachedChannel.textLike) {
-				updateGuildChannelPermissions(cachedChannel);
-			}
-		}
+
+		updateGuildRelatedSyncs(guild);
 	}
 
 	/**
@@ -832,16 +880,21 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 		}
 	}
 
-	function syncAllGuildMembers(account: Account, cachedGuild: CachedGuild) {
-		if (!cachedGuild.options.requestAllMembers) return;
-		log.verbose?.(`Started syncing guild members from ${cachedGuild.name} (${cachedGuild.id}) using ${account.name}.`);
-		cachedGuild.memberUserIDs = new Set();
-		account.ongoingMemberRequestGuildIDs.add(cachedGuild.id);
+	function syncAllGuildMembers(account: Account, guild: CachedGuild) {
+		if (!guild.options.requestAllMembers) return;
+		log.verbose?.(`Started syncing guild members from ${guild.name} (${guild.id}) using ${account.name}.`);
+
+		guild.memberSync = {
+			account,
+			guild,
+			memberIDs: new Set(),
+		};
+
 		account.numberOfOngoingGatewayOperations++;
 		account.gatewayConnection.sendPayload({
 			op: DT.GatewayOpcode.RequestGuildMembers,
 			d: {
-				guild_id: cachedGuild.id,
+				guild_id: guild.id,
 				query: "",
 				limit: 0,
 			},
@@ -961,6 +1014,14 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 							};
 							log.info?.(`Gateway connection ready for ${account.name} (${account.details.tag}).`);
 							numberOfGuildsLeft = payload.d.guilds.length;
+
+							for (const [guildID, cachedGuild] of guilds.entries()) {
+								if (cachedGuild.accountData.has(account) && !payload.d.guilds.some(g => g.id === guildID)) {
+									log.warning?.(`${account.name} was found to be removed from guild ${cachedGuild.name} (${guildID}) while the gateway connection was inactive.`);
+									cachedGuild.accountData.delete(account);
+									updateGuildPermissions(cachedGuild);
+								}
+							}
 							break;
 						}
 
@@ -980,13 +1041,13 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 						case "GUILD_CREATE": {
 							onReceivedGuildInfo();
 							const guild = payload.d;
-							const rolePermissions = new Map(guild.roles.map(r => [r.id, BigInt(r.permissions)]));
+
 							const ownMember = guild.members.find(m => m.user.id === account.details!.id)!;
 
 							const options = getGuildOptions(config, guild.id);
 							let cachedGuild = guilds.get(guild.id);
 
-							let syncPromise: Promise<Pick<CachedGuild, "missingEmojiUploaders"> | undefined>;
+							let syncPromise: Promise<void>;
 							if (options.archive) {
 								const files: DownloadArguments[] = [];
 								if (options.downloadServerAssets) {
@@ -1013,7 +1074,6 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 										files.push({ url, downloadURL: url });
 									}
 								}
-
 
 								// Will be awaited below.
 								syncPromise = doDownloadTransaction(abortController.signal, files, async () => {
@@ -1046,12 +1106,6 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 											timing: guildSnapshotTiming,
 										});
 									}
-									const ret = Promise.all([
-										db.request({
-											type: RequestType.CheckForMissingEmojiUploaders,
-											guildID: guild.id,
-										}),
-									]);
 
 									for (const role of guild.roles) {
 										db.request({
@@ -1077,13 +1131,6 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 											timing: guildSnapshotTiming,
 										});
 									}
-
-									const [
-										missingEmojiUploaders,
-									] = await ret;
-									return {
-										missingEmojiUploaders,
-									};
 								});
 							} else {
 								// This guild won't be archived
@@ -1096,12 +1143,16 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 									options,
 									name: guild.name,
 									ownerID: guild.owner_id,
-									rolePermissions,
+									rolePermissions: new Map(guild.roles.map(r => [r.id, BigInt(r.permissions)])),
 									accountData: new Map(),
-									accountsWithExpressionPermission: new Set(),
+									accountsWithExpressionPermission: [],
+									emojiIDs: new Set(guild.emojis.map(e => e.id)),
 									channels: new Map(),
-									memberUserIDs: null,
-									missingEmojiUploaders: undefined,
+									areMembersSynced: false,
+									memberSync: null,
+									areEmojiUploadersSynced: undefined,
+									pendingEmojiUploaderSyncUpdate: false,
+									emojiUploaderSync: null,
 									initialSyncPromise: syncPromise.then(() => undefined),
 								};
 								// Prevent this promise from causing an unhandled rejection while
@@ -1110,9 +1161,8 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 								cachedGuild.initialSyncPromise.catch(() => {});
 								guilds.set(guild.id, cachedGuild);
 							} else {
-								cachedGuild.name = guild.name;
-								cachedGuild.ownerID = guild.owner_id;
-								cachedGuild.rolePermissions = rolePermissions;
+								updateGuildProperties(cachedGuild, guild);
+								cachedGuild.areMembersSynced = false;
 							}
 
 							for (const channel of guild.channels) {
@@ -1155,15 +1205,16 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 
 							updateProgressOutput();
 
-							const syncResult = await syncPromise;
-							cachedGuild.missingEmojiUploaders = syncResult?.missingEmojiUploaders;
+							await syncPromise;
 							log.verbose?.(`${options.archive ? "Synced" : "Received"} basic guild info for ${cachedGuild.name} (${cachedGuild.id}) using ${account.name}.`);
 							break;
 						}
 						case "GUILD_UPDATE": {
-							const cachedGuild = getGuild(payload.d.id, payload.t);
+							const guild = payload.d;
+							const cachedGuild = getGuild(guild.id, payload.t);
 							if (cachedGuild === undefined) break;
 
+							updateGuildProperties(cachedGuild, guild);
 							updateGuildPermissions(cachedGuild);
 
 							if (cachedGuild.options.storeServerEdits) {
@@ -1171,7 +1222,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 								await db.transaction(async () => {
 									db.request({
 										type: RequestType.AddGuildSnapshot,
-										guild: payload.d,
+										guild,
 										timing,
 									});
 								});
@@ -1252,6 +1303,10 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 										});
 									}
 								});
+
+								// We need to request the emoji uploaders in case a new emoji was added.
+								cachedGuild.areEmojiUploadersSynced = undefined;
+								updateEmojiUploaderSync(cachedGuild);
 							}
 							break;
 						}
@@ -1261,23 +1316,26 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 							const cachedGuild = getGuild(payload.d.guild_id, payload.t);
 							if (cachedGuild === undefined) break;
 
-							if (cachedGuild.memberUserIDs === null) {
+							const sync = cachedGuild.memberSync;
+							if (sync === null || sync.account !== account) {
 								log.warning?.("Received an unexpected GUILD_MEMBERS_CHUNK dispatch.");
 								break;
 							}
 							for (const member of payload.d.members) {
-								cachedGuild.memberUserIDs.add(BigInt(member.user.id));
+								sync.memberIDs.add(BigInt(member.user.id));
 							}
 							if (isLast) {
 								log.verbose?.(`Finished syncing guild members from ${cachedGuild.name} (${cachedGuild.id}) using ${account.name}.`);
-								account.ongoingMemberRequestGuildIDs.delete(payload.d.guild_id);
+								cachedGuild.areMembersSynced = true;
+								cachedGuild.memberSync = null;
+								account.ongoingMemberSyncs.delete(sync);
 								account.numberOfOngoingGatewayOperations--;
 
 								db.transaction(async () => {
 									db.request({
 										type: RequestType.SyncGuildMembers,
 										guildID: BigInt(cachedGuild.id),
-										userIDs: cachedGuild.memberUserIDs!,
+										userIDs: sync.memberIDs,
 										timing: {
 											timestamp,
 											realtime: false,
@@ -1675,16 +1733,12 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 				log.warning?.(`Gateway session lost for ${account.name}. Some events may have been missed, so it's necessary to resync.`);
 
 				// Handle interrupted member requests
-				account.numberOfOngoingGatewayOperations -= account.ongoingMemberRequestGuildIDs.size;
-				for (const guildID of account.ongoingMemberRequestGuildIDs) {
-					account.ongoingMemberRequestGuildIDs.delete(guildID);
-
-					const guild = guilds.get(guildID);
-					if (guild !== undefined) {
-						log.verbose?.(`Member request for guild ${guild.name} (${guildID}) was interrupted.`);
-						guild.memberUserIDs = null;
-					}
+				for (const sync of account.ongoingMemberSyncs) {
+					const guild = sync.guild;
+					log.verbose?.(`Member request for guild ${guild.name} (${guild.id}) was interrupted.`);
+					guild.memberSync = null;
 				}
+				account.ongoingMemberSyncs.clear();
 			});
 
 			if (log.debug) {
@@ -1730,16 +1784,13 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 					throw new Error("The account was already disconnected");
 
 				accounts.delete(account);
-				for (const reference of account.references) {
-					reference.delete(account);
-				}
 
 				account.gatewayConnection.destroy();
 
 				const endPromises = [];
 				for (const { abortController, end } of account.ongoingOperations) {
 					endPromises.push(end);
-					abortController.abort();
+					abortController?.abort();
 				}
 				await Promise.all(endPromises);
 
@@ -1765,9 +1816,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 				numberOfOngoingRESTOperations: 0,
 				numberOfOngoingGatewayOperations: 0,
 				ongoingOperations: new Set(),
-				ongoingMemberRequestGuildIDs: new Set(),
-
-				references: new Set(),
+				ongoingMemberSyncs: new Set(),
 			};
 			accounts.add(account);
 		});
@@ -1850,15 +1899,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 				}
 			}
 
-			syncAllGuildMembers(getLeastGatewayOccupiedAccount(guild.accountData.keys())!, guild);
-			if (guild.missingEmojiUploaders && guild.accountsWithExpressionPermission.size > 0) {
-				requestExpressionUploaders(getLeastRESTOccupiedAccount(guild.accountsWithExpressionPermission)!, guild);
-			}
-
-			for (const channel of guild.channels.values()) {
-				if (!channel.textLike) continue;
-				updateGuildChannelRelatedSyncs(channel);
-			}
+			updateGuildRelatedSyncs(guild);
 		})();
 	}
 })();

@@ -1,5 +1,5 @@
 import * as DT from "../discord-api/types.js";
-import { Account, OngoingMessageSync, OngoingThreadSync } from "./accounts.js";
+import { Account, OngoingExpressionUploaderRequest, OngoingMemberListSync as OngoingMemberSync, OngoingMessageSync, OngoingThreadSync } from "./accounts.js";
 import { ChannelOptions, getChannelOptions, getThreadOptions, GuildOptions, ParsedConfig } from "./config.js";
 
 export type MessageSyncFields = {
@@ -76,13 +76,20 @@ export type CachedGuild = {
 	 * Accounts with the CREATE_GUILD_EXPRESSIONS or the MANAGE_GUILD_EXPRESSIONS permission,
 	 * required to view who uploaded each emoji, sticker, and soundboard sound.
 	 */
-	accountsWithExpressionPermission: Set<Account>;
+	accountsWithExpressionPermission: Account[];
 
 	channels: Map<string, CachedChannel>;
-	memberUserIDs: Set<bigint> | null;
+	emojiIDs: Set<string>;
+	// memberUserIDs: Set<bigint> | null;
+
+	areMembersSynced: boolean;
+	/** If this is `null`, then all members are synced. */
+	memberSync: OngoingMemberSync | null;
 
 	/** Whether we are missing uploader info for some emojis. */
-	missingEmojiUploaders: boolean | undefined;
+	areEmojiUploadersSynced: boolean | undefined;
+	pendingEmojiUploaderSyncUpdate: boolean;
+	emojiUploaderSync: OngoingExpressionUploaderRequest | null;
 
 	/**
 	 * Resolved when the guild is stored in the database. This is needed because we can't archive
@@ -113,6 +120,12 @@ export function isChannelWithThreads(channel: DT.Channel): channel is TextChanne
 		channel.type === DT.ChannelType.GuildForum ||
 		channel.type === DT.ChannelType.GuildMedia
 	);
+}
+
+export function updateGuildProperties(cachedGuild: CachedGuild, guild: DT.Guild): void {
+	cachedGuild.name = guild.name;
+	cachedGuild.ownerID = guild.owner_id;
+	cachedGuild.rolePermissions = new Map(guild.roles.map(r => [r.id, BigInt(r.permissions)]));
 }
 
 export function cacheChannel(cachedChannel: CachedTextLikeChannel | undefined, channel: DT.Channel, config: ParsedConfig, updateLastMessage?: boolean, cachedGuild?: CachedGuild | null): CachedTextLikeChannel;
