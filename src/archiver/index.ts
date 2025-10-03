@@ -7,7 +7,7 @@ process.on("uncaughtExceptionMonitor", () => {
 
 import * as DT from "../discord-api/types.js";
 import { AddGuildMemberSnapshotRequest, AddSnapshotResult, getDatabaseConnection, GetLastSyncedMessageIDRequest, RequestType, SetLastSyncedMessageIDRequest, Timing } from "../db/index.js";
-import { GatewayConnection } from "../discord-api/gateway/connection.js";
+import { GatewayCloseError, GatewayConnection } from "../discord-api/gateway/connection.js";
 import { apiReq, RequestResult } from "../discord-api/rest.js";
 import { computeChannelPermissions, computeGuildPermissions } from "./permissions.js";
 import { areMapsEqual } from "../util/map-equality.js";
@@ -901,8 +901,13 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 		});
 	}
 
+	/**
+	 * Connects an account and adds it to the accounts set.
+	 *
+	 * If connecting the account fails, the promise is resolved but the account is removed from the set.
+	 */
 	function connectAccount(accountOptions: AccountOptions): Promise<void> {
-		return new Promise((res, rej) => {
+		return new Promise((res) => {
 			const bot = accountOptions.mode === "bot";
 
 			let ready = false;
@@ -1751,14 +1756,14 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 			}
 
 			gatewayConnection.on("error", (err) => {
-				if (!ready) {
-					rej(err);
+				if (err instanceof GatewayCloseError && err.code === 4004) {
+					log.error?.(`Got a 4004 gateway close code for ${account.name}. The authentication token is invalid. This account will be disconnected.`);
 				} else {
 					log.error?.(`Got an error on ${account.name}’s gateway connection. This account will be disconnected. ${err}`);
-					account.disconnect();
-					if (accounts.size === 0) {
-						stop();
-					}
+				}
+				account.disconnect();
+				if (accounts.size === 0) {
+					stop();
 				}
 			});
 
@@ -1769,7 +1774,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 				await restRateLimiter.whenFree();
 				const result = await apiReq<T>(endpoint, options, abortIfFail);
 				if (result.response.status === 401 && accounts.has(account)) {
-					log.error?.(`Got HTTP status 401 Unauthorized while using ${account.name}. The authentication token is no longer valid. This account will be disconnected.`);
+					log.error?.(`Got HTTP status 401 Unauthorized while using ${account.name}. The authentication token is invalid. This account will be disconnected.`);
 					// This will immediately abort all operations
 					account.disconnect();
 					if (accounts.size === 0) {
@@ -1794,8 +1799,15 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 				}
 				await Promise.all(endPromises);
 
+				if (!stopping) {
+					// Move the syncs from this account to another one.
+					for (const guild of guilds.values()) {
+						updateGuildRelatedSyncs(guild);
+					}
+				}
+
 				if (!ready) {
-					rej(abortError);
+					res();
 				}
 			}
 
@@ -1830,7 +1842,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 		if (stopping) return;
 		stopping = true;
 		stopProgressDisplay();
-		log.info?.("Exiting. (Press Ctrl+C again to terminate abruptly.)");
+		log.info?.("Exiting. (Press Ctrl+C to terminate abruptly.)");
 		globalAbortController.abort();
 		log.verbose?.("Disconnecting all accounts.");
 		await Promise.all(accounts.values().map(account => account.disconnect()));
@@ -1871,13 +1883,6 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 			token: accountConfig.token,
 		}, accountConfig.gatewayIdentifyData),
 		restHeaders: {},
-	}).catch((err: unknown) => {
-		const accountName = accountConfig.name ?? `account #${index}`;
-		if (err === abortError) {
-			log.verbose?.(`Connection of ${accountName} was aborted.`);
-		} else {
-			log.error?.(`Couldn't connect ${accountName}. Error: ${(err as Error)}`);
-		}
 	})));
 
 	if (accounts.size === 0) return;
