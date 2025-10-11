@@ -273,6 +273,11 @@ export const enum MessageFlag {
 	IsComponentsV2 = 1 << 15,
 }
 
+export const enum ReactionType {
+	Normal = 0,
+	Burst = 1,
+};
+
 export type Reaction = {
 	/** Total number of times this emoji has been used to react (including super reacts) */
 	count: number;
@@ -1731,7 +1736,7 @@ export type GatewayMessageReactionAddDispatchPayload = GatewayGenericDispatchPay
 	message_author_id?: string;
 	burst: boolean;
 	burst_colors?: string[];
-	type: number;
+	type: ReactionType;
 }>;
 export type GatewayMessageReactionRemoveDispatchPayload = GatewayGenericDispatchPayload<"MESSAGE_REACTION_REMOVE", {
 	user_id: string;
@@ -1741,7 +1746,7 @@ export type GatewayMessageReactionRemoveDispatchPayload = GatewayGenericDispatch
 	emoji: PartialEmoji;
 	message_author_id?: string;
 	burst: boolean;
-	type: number;
+	type: ReactionType;
 }>;
 export type GatewayMessageReactionRemoveAllDispatchPayload = GatewayGenericDispatchPayload<"MESSAGE_REACTION_REMOVE_ALL", {
 	channel_id: string;

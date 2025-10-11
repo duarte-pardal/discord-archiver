@@ -6,8 +6,8 @@
 // TODO: Add support for Bun's `bun:sqlite`?
 import * as fs from "node:fs";
 import * as DT from "../discord-api/types.js";
-import { default as SQLite, Statement, SqliteError } from "better-sqlite3";
-import { SingleRequest, SingleResponseFor, Timing, RequestType, IteratorRequest, IteratorResponseFor, AddSnapshotResult, ObjectSnapshotResponse } from "./types.js";
+import { default as SQLite, Statement } from "better-sqlite3";
+import { SingleRequest, SingleResponseFor, Timing, RequestType, IteratorRequest, IteratorResponseFor, AddSnapshotResult, ObjectSnapshotResponse, GetReactionsHistoryRequest, AddReactionResult } from "./types.js";
 import { encodeSnowflakeArray, encodeObject, ObjectType, encodeImageHash, decodeObject, encodePermissionOverwrites, decodePermissionOverwrites, decodeImageHash, encodeEmoji, encodeEmojiProps, decodeEmojiProps, setLogger, decodeSnowflakeArray } from "./generic-encoding.js";
 import { Logger } from "../util/log.js";
 import { snowflakeToTimestamp } from "../discord-api/snowflake.js";
@@ -146,11 +146,23 @@ SELECT id FROM latest_${objectName}_snapshots WHERE ${parentIDName} IS :$parentI
 		addAttachment: db.prepare("INSERT OR IGNORE INTO attachments (id, _extra, _message_id, filename, title, description, content_type, original_content_type, size, height, width, ephemeral, duration_secs, waveform, flags) VALUES (:id, :_extra, :_message_id, :filename, :title, :description, :content_type, :original_content_type, :size, :height, :width, :ephemeral, :duration_secs, :waveform, :flags);"),
 		getAttachment: db.prepare("SELECT id, _extra, _message_id, filename, title, description, content_type, original_content_type, size, height, width, ephemeral, duration_secs, waveform, flags FROM attachments WHERE id = :id;"),
 
+		getReactionHistory: db.prepare(`
+SELECT
+	coalesce(reaction_emojis.name, reactions.emoji) AS emoji_name,
+	reaction_emojis.id AS emoji_id,
+	reaction_emojis.animated AS emoji_animated,
+	reactions.type,
+	reactions.user_id,
+	reactions.start,
+	reactions.end
+FROM reactions
+LEFT JOIN reaction_emojis ON typeof(reactions.emoji) = 'integer' AND reaction_emojis.id = reactions.emoji
+WHERE reactions.message_id = :message_id;
+`),
 		addReactionEmoji: db.prepare("INSERT OR IGNORE INTO reaction_emojis (id, name, animated) VALUES (:id, :name, :animated);"),
 		addReactionPlacement: db.prepare("INSERT INTO reactions (message_id, emoji, type, user_id, start, end) VALUES (:message_id, :emoji, :type, :user_id, :start, NULL);"),
 		markReactionAsRemoved: db.prepare("UPDATE reactions SET end = :end WHERE message_id IS :message_id AND emoji IS :emoji AND type IS :type AND user_id IS :user_id AND end IS NULL;"),
-		markReactionsAsRemovedByMessage: db.prepare("UPDATE reactions SET end = :end WHERE message_id IS :message_id AND end IS NULL;"),
-		markReactionsAsRemovedByMessageAndEmoji: db.prepare("UPDATE reactions SET end = :end WHERE message_id IS :message_id AND emoji IS :emoji AND end IS NULL;"),
+		markReactionsAsRemovedBulk: db.prepare("UPDATE reactions SET end = :end WHERE message_id IS :message_id AND (:emoji IS NULL OR emoji IS :emoji) AND end IS NULL;"),
 		checkForReaction: db.prepare("SELECT 1 FROM reactions WHERE message_id IS :message_id AND emoji IS :emoji AND type IS :type AND user_id IS :user_id AND end IS NULL;"),
 
 		getFile: db.prepare("SELECT url, content_hash, error_code FROM files WHERE :$getAll = 1 OR url IS :url;"),
@@ -275,6 +287,8 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _guild_id = :_guild_id AND _del
 			_timestamp: encodeTiming(timing),
 		});
 	}
+	function decodeTiming(timing: bigint): Timing;
+	function decodeTiming(timing: bigint | null): Timing | null;
 	function decodeTiming(timing: bigint | null): Timing | null {
 		return timing === null || timing === 0n ? null : {
 			timestamp: Number(timing >> 1n),
@@ -414,6 +428,7 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _guild_id = :_guild_id AND _del
 	}
 
 
+	// BUG: This is broken with threads!
 	let cachedChannelID: string;
 	let cachedChannelParentID: string;
 	let cachedChannelGuildID: string;
@@ -892,7 +907,20 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _guild_id = :_guild_id AND _del
 				break;
 			}
 
-			// BUG: The reaction requests may fail if the user is not in the database.
+			case RequestType.GetReactionHistory: {
+				response = Iterator.prototype.map.call(statements.getReactionHistory.iterate({ message_id: req.messageID }), (data) => ({
+					emoji: {
+						name: data.emoji_name,
+						id: data.emoji_id == null ? null : String(data.emoji_id),
+						...(data.emoji_animated ? { animated: true } : {}),
+					},
+					type: Number(data.type),
+					user: getObjectSnapshot(objectStatements.user, data.user_id, null, decodeUser)!.data,
+					start: decodeTiming(data.start),
+					end: decodeTiming(data.end),
+				}) satisfies IteratorResponseFor<GetReactionsHistoryRequest>);
+				break;
+			}
 			case RequestType.AddInitialReactions: {
 				const emoji = encodeEmoji(req.emoji);
 				if (req.emoji.id) {
@@ -902,38 +930,67 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _guild_id = :_guild_id AND _del
 						animated: req.emoji.animated ? 1n : 0n,
 					});
 				}
-				for (const userID of req.userIDs) {
+
+				const start = encodeTiming({
+					timestamp: req.timestamp,
+					realtime: false,
+				});
+				for (const user of req.users) {
+					requestHandler({
+						type: RequestType.AddUserSnapshot,
+						user,
+						timing: {
+							timestamp: req.timestamp,
+							realtime: false,
+						},
+					});
 					statements.addReactionPlacement.run({
 						message_id: req.messageID,
 						emoji,
 						type: req.reactionType,
-						user_id: userID,
-						start: 0n,
+						user_id: user.id,
+						start,
 					});
 				}
 				break;
 			}
 			case RequestType.AddReactionPlacement: {
+				if (objectStatements.message.doesExist.get({ id: req.messageID }) === undefined) {
+					response = AddReactionResult.MissingMessage;
+					break;
+				}
+
+				if (req.user !== undefined) {
+					requestHandler({
+						type: RequestType.AddUserSnapshot,
+						user: req.user,
+						timing: {
+							timestamp: req.timing.timestamp,
+							realtime: false,
+						},
+					});
+				} else if (objectStatements.user.doesExist.get({ id: req.userID }) === undefined) {
+					response = AddReactionResult.MissingUser;
+					break;
+				}
+
 				const emoji = encodeEmoji(req.emoji);
 				if (statements.checkForReaction.get({
 					message_id: req.messageID,
 					emoji,
 					type: req.reactionType,
 					user_id: req.userID,
-				}) === undefined) {
-					try {
-						statements.addReactionPlacement.run({
-							message_id: req.messageID,
-							emoji,
-							type: req.reactionType,
-							user_id: req.userID,
-							start: encodeTiming(req.timing),
-						});
-					} catch (err) {
-						if (!(err instanceof SqliteError && err.code === "SQLITE_CONSTRAINT_FOREIGNKEY")) {
-							throw err;
-						}
-					}
+				}) !== undefined) {
+					response = AddReactionResult.AlreadyExists;
+				} else {
+					statements.addReactionPlacement.run({
+						message_id: req.messageID,
+						emoji,
+						type: req.reactionType,
+						user_id: req.userID,
+						start: encodeTiming(req.timing),
+					});
+					response = AddReactionResult.AddedReaction;
 				}
 				break;
 			}
@@ -945,21 +1002,16 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _guild_id = :_guild_id AND _del
 					user_id: req.userID,
 					end: encodeTiming(req.timing),
 				});
+				response = getChanges() > 0;
 				break;
 			}
 			case RequestType.MarkReactionsAsRemovedBulk: {
-				if (req.emoji === null) {
-					statements.markReactionsAsRemovedByMessage.run({
-						message_id: req.messageID,
-						end: encodeTiming(req.timing),
-					});
-				} else {
-					statements.markReactionsAsRemovedByMessage.run({
-						message_id: req.messageID,
-						emoji: encodeEmoji(req.emoji),
-						end: encodeTiming(req.timing),
-					});
-				}
+				statements.markReactionsAsRemovedBulk.run({
+					message_id: req.messageID,
+					emoji: req.emoji == null ? null : encodeEmoji(req.emoji),
+					end: encodeTiming(req.timing),
+				});
+				response = Number(getChanges());
 				break;
 			}
 

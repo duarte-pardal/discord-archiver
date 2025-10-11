@@ -1,8 +1,8 @@
 import test, { TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { getRequestHandler, RequestHandler } from "./request-handler.js";
-import { AddGuildMemberSnapshotRequest, AddGuildMemberLeaveRequest, AddSnapshotResult, GetChannelsRequest, GetForumTagsRequest, GetGuildEmojisRequest, GetGuildMembersRequest, GetGuildsRequest, GetMessagesRequest, GetRolesRequest, GetThreadsRequest, IteratorResponseFor, MarkMessageAsDeletedRequest, RequestType, SyncGuildMembersRequest, Timing, SetLastSyncedMessageIDRequest, GetLastSyncedMessageIDRequest } from "./types.js";
-import { Attachment, ChannelType, GatewayGuildCreateDispatchPayload, GuildMember, MemberFlag, Message, User } from "../discord-api/types.js";
+import { AddGuildMemberSnapshotRequest, AddGuildMemberLeaveRequest, AddSnapshotResult, GetChannelsRequest, GetForumTagsRequest, GetGuildEmojisRequest, GetGuildMembersRequest, GetGuildsRequest, GetMessagesRequest, GetRolesRequest, GetThreadsRequest, IteratorResponseFor, MarkMessageAsDeletedRequest, RequestType, SyncGuildMembersRequest, Timing, SetLastSyncedMessageIDRequest, GetLastSyncedMessageIDRequest, AddInitialReactionsRequest, AddReactionPlacementRequest, GetReactionsHistoryRequest as GetReactionHistoryRequest, MarkReactionAsRemovedRequest, MarkReactionAsRemovedBulkRequest, AddReactionResult } from "./types.js";
+import { Attachment, ChannelType, GatewayGuildCreateDispatchPayload, GuildMember, MemberFlag, Message, PartialEmoji, PartialUser, ReactionType, User } from "../discord-api/types.js";
 import { parseArgs } from "node:util";
 import { unlinkSync } from "node:fs";
 import { Logger } from "../util/log.js";
@@ -512,6 +512,27 @@ const guild: RecursiveExtension<GatewayGuildCreateDispatchPayload["d"]> = {
 	system_channel_id: "1367557310872031334",
 };
 
+let fakeUserCounter = 0n;
+function getFakeUser(): PartialUser {
+	const user = {
+		avatar: null,
+		avatar_decoration_data: null,
+		bot: false,
+		clan: null,
+		collectibles: null,
+		discriminator: "0",
+		display_name: "Fake user",
+		display_name_styles: null,
+		global_name: "Fake user",
+		id: String(2000000000000000000n + fakeUserCounter),
+		primary_guild: null,
+		public_flags: 0,
+		username: `fake user ${fakeUserCounter}`,
+	};
+	fakeUserCounter++;
+	return user;
+}
+
 // User objects as returned in the author field of messages.
 const users: RecursiveExtension<Message["author"]>[] = [
 	{
@@ -600,20 +621,7 @@ const guildMembers: GuildMemberEntry[] = [
 			pending: true,
 			premium_since: null,
 			roles: [],
-			user: {
-				avatar: null,
-				avatar_decoration_data: null,
-				bot: false,
-				collectibles: null,
-				discriminator: "0",
-				display_name: "Fake user 4",
-				display_name_styles: null,
-				global_name: "Fake user 4",
-				id: "2000000000000000004",
-				primary_guild: null,
-				public_flags: 0,
-				username: "fake user 4",
-			},
+			user: getFakeUser(),
 		},
 	},
 	{
@@ -628,20 +636,7 @@ const guildMembers: GuildMemberEntry[] = [
 			pending: false,
 			premium_since: null,
 			roles: [],
-			user: {
-				avatar: null,
-				avatar_decoration_data: null,
-				bot: false,
-				collectibles: null,
-				discriminator: "0",
-				display_name: "Fake user 3",
-				display_name_styles: null,
-				global_name: "Fake user 3",
-				id: "2000000000000000003",
-				primary_guild: null,
-				public_flags: 0,
-				username: "fake user 3",
-			},
+			user: getFakeUser(),
 		},
 	},
 	{
@@ -669,10 +664,10 @@ const guildMembers: GuildMemberEntry[] = [
 				display_name: "User who boosted the server",
 				display_name_styles: null,
 				global_name: "User who boosted the server",
-				id: "2000000000000000002",
+				id: "2100000000000000002",
 				primary_guild: null,
 				public_flags: 64,
-				username: "fake user 2",
+				username: "special fake user 2",
 			},
 			123: "abc",
 			collectibles: {
@@ -2591,8 +2586,8 @@ const messages: MessageEntry[] = [
 			id: "2020000000000000000",
 			channel_id: "1367557310872031334",
 			author: {
-				id: "2000000000000000000",
-				username: "fake user 0",
+				id: "2100000000000000000",
+				username: "special fake user 0",
 				avatar: "00000000000000000000000000000000",
 				discriminator: "0",
 				public_flags: 4194560,
@@ -2656,8 +2651,8 @@ const messages: MessageEntry[] = [
 			id: "2020000000000000001",
 			channel_id: "1367557310872031334",
 			author: {
-				id: "2000000000000000001",
-				username: "fake user 1",
+				id: "2100000000000000001",
+				username: "special fake user 1",
 				avatar: "00000000000000000000000000000000",
 				discriminator: "0",
 				public_flags: 4194560,
@@ -3481,150 +3476,98 @@ await test("messages can be marked as deleted", () => {
 	}
 });
 
+await test("archiving members works", async () => {
+	await test("guild member syncs work", () => {
+		const syncTimestamp = new Date("2025-09-17T00:00:00Z").getTime();
 
-await test("guild member syncs work", () => {
-	const syncTimestamp = new Date("2025-09-17T00:00:00Z").getTime();
+		request({
+			type: RequestType.SyncGuildMembers,
+			guildID: BigInt(guild.id),
+			userIDs: new Set([BigInt(guildMembers[2].data.user.id), BigInt(guildMembers[3].data.user.id)]),
+			timing: {
+				timestamp: syncTimestamp,
+				realtime: false,
+			},
+		} satisfies SyncGuildMembersRequest);
 
-	request({
-		type: RequestType.SyncGuildMembers,
-		guildID: BigInt(guild.id),
-		userIDs: new Set([2000000000000000002n, 2000000000000000003n]),
-		timing: {
+		const snapshots = [...request({
+			type: RequestType.GetGuildMembers,
+			guildID: guild.id,
 			timestamp: syncTimestamp,
-			realtime: false,
-		},
-	} satisfies SyncGuildMembersRequest);
+		} satisfies GetGuildMembersRequest)];
+		assert.equal(snapshots.length, guildMembers.length);
+		for (const snapshot of snapshots) {
+			assert.deepEqual(
+				snapshot.deletedTiming,
+				[guildMembers[2].data.user.id, guildMembers[3].data.user.id].includes(snapshot.data.user.id) ?
+					null :
+					{
+						timestamp: syncTimestamp,
+						realtime: false,
+					},
+			);
+		}
+	});
 
-	const snapshots = [...request({
-		type: RequestType.GetGuildMembers,
-		guildID: guild.id,
-		timestamp: syncTimestamp,
-	} satisfies GetGuildMembersRequest)];
-	assert.equal(snapshots.length, guildMembers.length);
-	for (const snapshot of snapshots) {
+	function testMemberLeave(expectedResult: AddSnapshotResult) {
+		const timing = {
+			timestamp: new Date("2025-09-17T01:00:00Z").getTime(),
+			realtime: true,
+		};
+
+		assert.equal(
+			request({
+				type: RequestType.AddGuildMemberLeave,
+				guildID: guild.id,
+				userID: guildMembers[2].data.user.id,
+				timing,
+			} satisfies AddGuildMemberLeaveRequest),
+			expectedResult,
+		);
+
+		const snapshots = [...request({
+			type: RequestType.GetGuildMembers,
+			guildID: guild.id,
+			timestamp: timing.timestamp,
+		} satisfies GetGuildMembersRequest)];
+		assert.equal(snapshots.length, guildMembers.length);
 		assert.deepEqual(
-			snapshot.deletedTiming,
-			["2000000000000000002", "2000000000000000003"].includes(snapshot.data.user.id) ?
-				null :
-				{
-					timestamp: syncTimestamp,
-					realtime: false,
-				},
+			snapshots.find(s => s.data.user.id === guildMembers[2].data.user.id)!.deletedTiming,
+			timing,
 		);
 	}
-});
-
-function testMemberLeave(expectedResult: AddSnapshotResult) {
-	const timing = {
-		timestamp: new Date("2025-09-17T01:00:00Z").getTime(),
-		realtime: true,
-	};
-
-	assert.equal(
-		request({
-			type: RequestType.AddGuildMemberLeave,
-			guildID: guild.id,
-			userID: "2000000000000000002",
-			timing,
-		} satisfies AddGuildMemberLeaveRequest),
-		expectedResult,
-	);
-
-	const snapshots = [...request({
-		type: RequestType.GetGuildMembers,
-		guildID: guild.id,
-		timestamp: timing.timestamp,
-	} satisfies GetGuildMembersRequest)];
-	assert.equal(snapshots.length, guildMembers.length);
-	assert.deepEqual(
-		snapshots.find(s => s.data.user.id === "2000000000000000002")!.deletedTiming,
-		timing,
-	);
-}
-await test("guild member leaves are saved", () => {
-	testMemberLeave(AddSnapshotResult.AddedAnotherSnapshot);
-});
-await test("guild member leaves are idempotent", () => {
-	testMemberLeave(AddSnapshotResult.SameAsLatest);
-});
-
-function testMemberJoin(expectedResult: AddSnapshotResult) {
-	const timing = {
-		timestamp: new Date("2025-09-17T02:00:00Z").getTime(),
-		realtime: true,
-	};
-	const member = guildMembers.find(e => e.data.user.id === "2000000000000000002")!.data;
-
-	assert.equal(
-		request({
-			type: RequestType.AddGuildMemberSnapshot,
-			guildID: guild.id,
-			member,
-			timing,
-		} satisfies AddGuildMemberSnapshotRequest),
-		expectedResult,
-	);
-
-	const snapshots = [...request({
-		type: RequestType.GetGuildMembers,
-		guildID: guild.id,
-		timestamp: timing.timestamp,
-	} satisfies GetGuildMembersRequest)];
-	assert.equal(snapshots.length, guildMembers.length);
-	assertEqual({
-		actual: snapshots.find(s => s.data.user.id === "2000000000000000002"),
-		expected: {
-			timing,
-			deletedTiming: null,
-			data: stripGuildMember(structuredClone(member)),
-		},
+	await test("guild member leaves are saved", () => {
+		testMemberLeave(AddSnapshotResult.AddedAnotherSnapshot);
 	});
-}
-await test("guild member joins are saved", () => {
-	testMemberJoin(AddSnapshotResult.AddedAnotherSnapshot);
-});
-await test("guild member joins are idempotent", () => {
-	testMemberJoin(AddSnapshotResult.SameAsLatest);
-});
+	await test("guild member leaves are idempotent", () => {
+		testMemberLeave(AddSnapshotResult.SameAsLatest);
+	});
 
-await test("guild member updates don't change the `deaf` and `mute` properties", () => {
-	const timing = {
-		timestamp: new Date("2025-09-17T03:00:00Z").getTime(),
-		realtime: true,
-	};
+	function testMemberJoin(expectedResult: AddSnapshotResult) {
+		const timing = {
+			timestamp: new Date("2025-09-17T02:00:00Z").getTime(),
+			realtime: true,
+		};
+		const member = guildMembers.find(e => e.data.user.id === guildMembers[2].data.user.id)!.data;
 
-	const memberWithout: Omit<GuildMember, "deaf" | "mute"> = {
-		flags: 0,
-		joined_at: "2025-05-01T17:44:30.825000+00:00",
-		nick: null,
-		pending: false,
-		roles: [],
-		user: {
-			avatar: null,
-			avatar_decoration_data: null,
-			bot: false,
-			collectibles: null,
-			discriminator: "0",
-			display_name: "Fake user",
-			display_name_styles: null,
-			global_name: "Fake user",
-			id: "2000000000000001000",
-			primary_guild: null,
-			public_flags: 0,
-			username: "fake user",
-		},
-	};
-	const memberWith: Omit<GuildMember, "deaf" | "mute"> & Partial<GuildMember> = structuredClone(memberWithout);
-	memberWith.deaf = true;
-	memberWith.mute = false;
-	memberWith.user.id = "2000000000000001001";
+		assert.equal(
+			request({
+				type: RequestType.AddGuildMemberSnapshot,
+				guildID: guild.id,
+				member,
+				timing,
+			} satisfies AddGuildMemberSnapshotRequest),
+			expectedResult,
+		);
 
-	function assertSnapshotsEqual(
-		snapshot: IteratorResponseFor<GetGuildMembersRequest>,
-		member: Omit<GuildMember, "deaf" | "mute"> & Partial<GuildMember>,
-	) {
+		const snapshots = [...request({
+			type: RequestType.GetGuildMembers,
+			guildID: guild.id,
+			timestamp: timing.timestamp,
+		} satisfies GetGuildMembersRequest)];
+		assert.equal(snapshots.length, guildMembers.length);
 		assertEqual({
-			actual: snapshot,
+			actual: snapshots.find(s => s.data.user.id === guildMembers[2].data.user.id),
 			expected: {
 				timing,
 				deletedTiming: null,
@@ -3632,85 +3575,125 @@ await test("guild member updates don't change the `deaf` and `mute` properties",
 			},
 		});
 	}
-	function checkSnapshots() {
-		const snapshots = [...request({
-			type: RequestType.GetGuildMembers,
-			guildID: guild.id,
-			timestamp: timing.timestamp,
-		} satisfies GetGuildMembersRequest)];
-		assert.equal(snapshots.length, guildMembers.length + 2);
+	await test("guild member joins are saved", () => {
+		testMemberJoin(AddSnapshotResult.AddedAnotherSnapshot);
+	});
+	await test("guild member joins are idempotent", () => {
+		testMemberJoin(AddSnapshotResult.SameAsLatest);
+	});
 
-		const snapshotWithout = snapshots.find(s => s.data.user.id === memberWithout.user.id)!;
-		const snapshotWith = snapshots.find(s => s.data.user.id === memberWith.user.id)!;
-		assert.equal(snapshotWithout.deletedTiming, null);
-		assert(!("deaf" in snapshotWithout.data));
-		assert(!("mute" in snapshotWithout.data));
-		assert.equal(snapshotWith.deletedTiming, null);
-		assert.equal(snapshotWith.data.deaf, true);
-		assert.equal(snapshotWith.data.mute, false);
+	await test("guild member updates don't change the `deaf` and `mute` properties", () => {
+		const timing = {
+			timestamp: new Date("2025-09-17T03:00:00Z").getTime(),
+			realtime: true,
+		};
 
-		assertSnapshotsEqual(snapshotWithout, memberWithout);
-		assertSnapshotsEqual(snapshotWith, memberWith);
-	}
+		const memberWithout: Omit<GuildMember, "deaf" | "mute"> = {
+			flags: 0,
+			joined_at: "2025-05-01T17:44:30.825000+00:00",
+			nick: null,
+			pending: false,
+			roles: [],
+			user: getFakeUser(),
+		};
+		const memberWith: Omit<GuildMember, "deaf" | "mute"> & Partial<GuildMember> = structuredClone(memberWithout);
+		memberWith.deaf = true;
+		memberWith.mute = false;
+		memberWith.user.id = "2000000000000001001";
+
+		function assertSnapshotsEqual(
+			snapshot: IteratorResponseFor<GetGuildMembersRequest>,
+			member: Omit<GuildMember, "deaf" | "mute"> & Partial<GuildMember>,
+		) {
+			assertEqual({
+				actual: snapshot,
+				expected: {
+					timing,
+					deletedTiming: null,
+					data: stripGuildMember(structuredClone(member)),
+				},
+			});
+		}
+		function checkSnapshots() {
+			const snapshots = [...request({
+				type: RequestType.GetGuildMembers,
+				guildID: guild.id,
+				timestamp: timing.timestamp,
+			} satisfies GetGuildMembersRequest)];
+			assert.equal(snapshots.length, guildMembers.length + 2);
+
+			const snapshotWithout = snapshots.find(s => s.data.user.id === memberWithout.user.id)!;
+			const snapshotWith = snapshots.find(s => s.data.user.id === memberWith.user.id)!;
+			assert.equal(snapshotWithout.deletedTiming, null);
+			assert(!("deaf" in snapshotWithout.data));
+			assert(!("mute" in snapshotWithout.data));
+			assert.equal(snapshotWith.deletedTiming, null);
+			assert.equal(snapshotWith.data.deaf, true);
+			assert.equal(snapshotWith.data.mute, false);
+
+			assertSnapshotsEqual(snapshotWithout, memberWithout);
+			assertSnapshotsEqual(snapshotWith, memberWith);
+		}
 
 
-	for (const member of [memberWithout, memberWith]) {
-		assert.equal(
-			request({
+		for (const member of [memberWithout, memberWith]) {
+			assert.equal(
+				request({
+					type: RequestType.AddGuildMemberSnapshot,
+					guildID: guild.id,
+					member,
+					timing,
+				} satisfies AddGuildMemberSnapshotRequest),
+				AddSnapshotResult.AddedFirstSnapshot,
+			);
+		}
+
+		checkSnapshots();
+
+
+		timing.timestamp = new Date("2025-09-17T04:00:00Z").getTime();
+		delete memberWith.deaf;
+		delete memberWith.mute;
+		memberWithout.nick = "updated";
+		memberWith.nick = "updated";
+		for (const member of [memberWithout, memberWith]) {
+			assert.equal(
+				request({
+					type: RequestType.AddGuildMemberSnapshot,
+					guildID: guild.id,
+					member,
+					timing,
+				} satisfies AddGuildMemberSnapshotRequest),
+				AddSnapshotResult.AddedAnotherSnapshot,
+			);
+		}
+
+		memberWith.deaf = true;
+		memberWith.mute = false;
+		checkSnapshots();
+	});
+
+	await test("guild members with missing mandatory properties are rejected", () => {
+		assert.throws(
+			() => request({
 				type: RequestType.AddGuildMemberSnapshot,
 				guildID: guild.id,
-				member,
-				timing,
+				member: {
+					// missing `flags`
+					joined_at: "2025-05-01T17:44:30.825000+00:00",
+					nick: null,
+					pending: false,
+					roles: [],
+					user: guildMembers[0].data.user,
+				} as any,
+				timing: {
+					timestamp: new Date("2025-09-17T04:00:00Z").getTime(),
+					realtime: false,
+				},
 			} satisfies AddGuildMemberSnapshotRequest),
-			AddSnapshotResult.AddedFirstSnapshot,
+			TypeError,
 		);
-	}
-
-	checkSnapshots();
-
-
-	timing.timestamp = new Date("2025-09-17T04:00:00Z").getTime();
-	delete memberWith.deaf;
-	delete memberWith.mute;
-	memberWithout.nick = "updated";
-	memberWith.nick = "updated";
-	for (const member of [memberWithout, memberWith]) {
-		assert.equal(
-			request({
-				type: RequestType.AddGuildMemberSnapshot,
-				guildID: guild.id,
-				member,
-				timing,
-			} satisfies AddGuildMemberSnapshotRequest),
-			AddSnapshotResult.AddedAnotherSnapshot,
-		);
-	}
-
-	memberWith.deaf = true;
-	memberWith.mute = false;
-	checkSnapshots();
-});
-
-await test("guild members with missing mandatory properties are rejected", () => {
-	assert.throws(
-		() => request({
-			type: RequestType.AddGuildMemberSnapshot,
-			guildID: guild.id,
-			member: {
-				// missing `flags`
-				joined_at: "2025-05-01T17:44:30.825000+00:00",
-				nick: null,
-				pending: false,
-				roles: [],
-				user: guildMembers[0].data.user,
-			} as any,
-			timing: {
-				timestamp: new Date("2025-09-17T04:00:00Z").getTime(),
-				realtime: false,
-			},
-		} satisfies AddGuildMemberSnapshotRequest),
-		TypeError,
-	);
+	});
 });
 
 async function testLastSyncedMessageID(t: TestContext, isThread: boolean) {
@@ -3778,6 +3761,249 @@ async function testLastSyncedMessageID(t: TestContext, isThread: boolean) {
 await test("getting/setting the latest synced message ID works", async (t) => {
 	await t.test("for channels", t => testLastSyncedMessageID(t, false));
 	await t.test("for threads", t => testLastSyncedMessageID(t, true));
+});
+
+await test("archiving reactions works", async (t) => {
+	const messageID = messages[0].data.id;
+	const newUsers = [getFakeUser(), getFakeUser(), getFakeUser()];
+	const unicodeEmoji: PartialEmoji = { id: null, name: "👨‍💻" };
+	const guildEmoji: PartialEmoji = { id: guild.emojis[0].id, name: guild.emojis[0].name };
+	const animatedGuildEmoji: PartialEmoji = { id: guild.emojis[1].id, name: guild.emojis[1].name, animated: true };
+
+	await t.test("adding initial reactions works", () => {
+		const timestamp = new Date("2025-10-05T00:00:00Z").getTime();
+		requestHandler({
+			type: RequestType.AddInitialReactions,
+			timestamp,
+			messageID,
+			emoji: unicodeEmoji,
+			reactionType: ReactionType.Normal,
+			users: [newUsers[0]],
+		} satisfies AddInitialReactionsRequest);
+		requestHandler({
+			type: RequestType.AddInitialReactions,
+			timestamp,
+			messageID,
+			emoji: guildEmoji,
+			reactionType: ReactionType.Burst,
+			users: [newUsers[1]],
+		} satisfies AddInitialReactionsRequest);
+		requestHandler({
+			type: RequestType.AddInitialReactions,
+			timestamp,
+			messageID,
+			emoji: animatedGuildEmoji,
+			reactionType: ReactionType.Normal,
+			users: [newUsers[0], newUsers[1]],
+		} satisfies AddInitialReactionsRequest);
+	});
+
+	await t.test("adding a new reaction from a message not in the database returns the expected value", () => {
+		assert.equal(requestHandler({
+			type: RequestType.AddReactionPlacement,
+			messageID: "123456789",
+			emoji: unicodeEmoji,
+			reactionType: ReactionType.Normal,
+			userID: newUsers[2].id,
+			user: newUsers[2],
+			timing: {
+				timestamp: new Date("2025-10-05T01:00:00Z").getTime(),
+				realtime: true,
+			},
+		}), AddReactionResult.MissingMessage);
+	});
+	await t.test("adding a new reaction from a user not in the database returns the expected value", () => {
+		assert.equal(requestHandler({
+			type: RequestType.AddReactionPlacement,
+			messageID,
+			emoji: unicodeEmoji,
+			reactionType: ReactionType.Normal,
+			userID: newUsers[2].id,
+			timing: {
+				timestamp: new Date("2025-10-05T01:00:00Z").getTime(),
+				realtime: true,
+			},
+		}), AddReactionResult.MissingUser);
+	});
+
+	const addRequest0: AddReactionPlacementRequest = {
+		type: RequestType.AddReactionPlacement,
+		messageID,
+		emoji: unicodeEmoji,
+		reactionType: ReactionType.Normal,
+		userID: newUsers[2].id,
+		user: newUsers[2],
+		timing: {
+			timestamp: new Date("2025-10-05T01:00:00Z").getTime(),
+			realtime: true,
+		},
+	};
+	await t.test("adding a new reaction with the same emoji and type works", () => {
+		assert.equal(requestHandler(addRequest0), AddReactionResult.AddedReaction);
+	});
+	await t.test("adding a new reaction with the same emoji and type is idempotent", () => {
+		assert.equal(requestHandler(addRequest0), AddReactionResult.AlreadyExists);
+	});
+
+	const addRequest1: AddReactionPlacementRequest = {
+		type: RequestType.AddReactionPlacement,
+		messageID,
+		emoji: unicodeEmoji,
+		reactionType: ReactionType.Burst,
+		userID: newUsers[2].id,
+		timing: {
+			timestamp: new Date("2025-10-05T02:00:00Z").getTime(),
+			realtime: false,
+		},
+	};
+	await t.test("adding a new reaction with the same emoji but a different type works", () => {
+		assert.equal(requestHandler(addRequest1), AddReactionResult.AddedReaction);
+	});
+	await t.test("adding a new reaction with the same emoji but a different type is idempotent", () => {
+		assert.equal(requestHandler(addRequest1), AddReactionResult.AlreadyExists);
+	});
+
+	const removeRequest: MarkReactionAsRemovedRequest = {
+		type: RequestType.MarkReactionAsRemoved,
+		messageID,
+		emoji: unicodeEmoji,
+		reactionType: ReactionType.Normal,
+		userID: newUsers[0].id,
+		timing: {
+			timestamp: new Date("2025-10-05T03:00:00Z").getTime(),
+			realtime: true,
+		},
+	};
+	await t.test("removing a reaction works", () => {
+		assert.equal(requestHandler(removeRequest), true);
+	});
+	await t.test("removing a reaction is idempotent", () => {
+		assert.equal(requestHandler(removeRequest), false);
+	});
+
+	const addRequest2: AddReactionPlacementRequest = {
+		type: RequestType.AddReactionPlacement,
+		messageID,
+		emoji: unicodeEmoji,
+		reactionType: ReactionType.Normal,
+		userID: newUsers[0].id,
+		timing: {
+			timestamp: new Date("2025-10-05T04:00:00Z").getTime(),
+			realtime: true,
+		},
+	};
+	await t.test("adding a previously removed reaction works", () => {
+		assert.equal(requestHandler(addRequest2), AddReactionResult.AddedReaction);
+	});
+	await t.test("adding a previously removed reaction is idempotent", () => {
+		assert.equal(requestHandler(addRequest2), AddReactionResult.AlreadyExists);
+	});
+
+	const removeEmojiRequest: MarkReactionAsRemovedBulkRequest = {
+		type: RequestType.MarkReactionsAsRemovedBulk,
+		messageID,
+		emoji: unicodeEmoji,
+		timing: {
+			timestamp: new Date("2025-10-05T05:00:00Z").getTime(),
+			realtime: true,
+		},
+	};
+	await t.test("removing all reactions with a given emoji works", () => {
+		assert.equal(requestHandler(removeEmojiRequest), 3);
+	});
+	await t.test("removing all reactions with a given emoji is idempotent", () => {
+		assert.equal(requestHandler(removeEmojiRequest), 0);
+	});
+
+	const removeAllRequest: MarkReactionAsRemovedBulkRequest = {
+		type: RequestType.MarkReactionsAsRemovedBulk,
+		messageID,
+		emoji: null,
+		timing: {
+			timestamp: new Date("2025-10-05T06:00:00Z").getTime(),
+			realtime: false,
+		},
+	};
+	await t.test("removing all reactions works", () => {
+		assert.equal(requestHandler(removeAllRequest), 3);
+	});
+	await t.test("removing all reactions is idempotent", () => {
+		assert.equal(requestHandler(removeAllRequest), 0);
+	});
+
+	await t.test("the reaction history is as expected", () => {
+		for (const user of newUsers) {
+			stripUser(user);
+		}
+
+		const history = [...requestHandler({
+			type: RequestType.GetReactionHistory,
+			messageID,
+		} satisfies GetReactionHistoryRequest)];
+		assert.equal(history.length, 7);
+
+		function check(entry: IteratorResponseFor<GetReactionHistoryRequest>) {
+			assert.deepEqual(
+				history.find(e =>
+					e.start.timestamp === entry.start.timestamp &&
+					e.emoji.id === entry.emoji.id &&
+					e.emoji.name === entry.emoji.name &&
+					e.type === entry.type &&
+					e.user.id === entry.user.id,
+				),
+				entry,
+			);
+		}
+		check({
+			start: { timestamp: new Date("2025-10-05T00:00:00Z").getTime(), realtime: false },
+			end: { timestamp: new Date("2025-10-05T03:00:00Z").getTime(), realtime: true },
+			emoji: unicodeEmoji,
+			type: ReactionType.Normal,
+			user: newUsers[0],
+		});
+		check({
+			start: { timestamp: new Date("2025-10-05T00:00:00Z").getTime(), realtime: false },
+			end: { timestamp: new Date("2025-10-05T06:00:00Z").getTime(), realtime: false },
+			emoji: guildEmoji,
+			type: ReactionType.Burst,
+			user: newUsers[1],
+		});
+		check({
+			start: { timestamp: new Date("2025-10-05T00:00:00Z").getTime(), realtime: false },
+			end: { timestamp: new Date("2025-10-05T06:00:00Z").getTime(), realtime: false },
+			emoji: animatedGuildEmoji,
+			type: ReactionType.Normal,
+			user: newUsers[0],
+		});
+		check({
+			start: { timestamp: new Date("2025-10-05T00:00:00Z").getTime(), realtime: false },
+			end: { timestamp: new Date("2025-10-05T06:00:00Z").getTime(), realtime: false },
+			emoji: animatedGuildEmoji,
+			type: ReactionType.Normal,
+			user: newUsers[1],
+		});
+		check({
+			start: { timestamp: new Date("2025-10-05T01:00:00Z").getTime(), realtime: true },
+			end: { timestamp: new Date("2025-10-05T05:00:00Z").getTime(), realtime: true },
+			emoji: unicodeEmoji,
+			type: ReactionType.Normal,
+			user: newUsers[2],
+		});
+		check({
+			start: { timestamp: new Date("2025-10-05T02:00:00Z").getTime(), realtime: false },
+			end: { timestamp: new Date("2025-10-05T05:00:00Z").getTime(), realtime: true },
+			emoji: unicodeEmoji,
+			type: ReactionType.Burst,
+			user: newUsers[2],
+		});
+		check({
+			start: { timestamp: new Date("2025-10-05T04:00:00Z").getTime(), realtime: true },
+			end: { timestamp: new Date("2025-10-05T05:00:00Z").getTime(), realtime: true },
+			emoji: unicodeEmoji,
+			type: ReactionType.Normal,
+			user: newUsers[0],
+		});
+	});
 });
 
 requestHandler({

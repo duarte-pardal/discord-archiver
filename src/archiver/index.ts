@@ -6,7 +6,7 @@ process.on("uncaughtExceptionMonitor", () => {
 });
 
 import * as DT from "../discord-api/types.js";
-import { AddGuildMemberSnapshotRequest, AddSnapshotResult, getDatabaseConnection, GetLastSyncedMessageIDRequest, RequestType, SetLastSyncedMessageIDRequest, Timing } from "../db/index.js";
+import { AddGuildMemberSnapshotRequest, AddReactionPlacementRequest, AddReactionResult, AddSnapshotResult, getDatabaseConnection, GetLastSyncedMessageIDRequest, RequestType, SetLastSyncedMessageIDRequest, SingleResponseFor, Timing } from "../db/index.js";
 import { GatewayCloseError, GatewayConnection } from "../discord-api/gateway/connection.js";
 import { apiReq, RequestResult } from "../discord-api/rest.js";
 import { computeChannelPermissions, computeGuildPermissions } from "./permissions.js";
@@ -213,11 +213,15 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 
 		const restOptions = mergeOptions(account.restOptions, { signal: abortSignal });
 
-		const reactions: {
+		type ReactionData = {
 			emoji: DT.PartialEmoji;
 			reactionType: 0 | 1;
-			userIDs: string[];
-		}[] = [];
+			responses: {
+				timestamp: number;
+				users: DT.PartialUser[];
+			}[];
+		};
+		const reactions: ReactionData[] = [];
 
 		if (includeReactions && cachedChannel.options.reactionArchivalMode === "users" && message.reactions != null) {
 			for (const reaction of message.reactions) {
@@ -230,12 +234,12 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 						files.push({ url, downloadURL: url });
 					}
 
-					const reactionData = {
+					const reactionData: ReactionData = {
 						emoji: reaction.emoji,
 						reactionType,
-						userIDs: new Array<string>(expectedCount),
+						responses: [],
 					};
-					let i = 0;
+					let count = 0;
 					const emoji = reaction.emoji.id === null ? reaction.emoji.name : `${reaction.emoji.name}:${reaction.emoji.id}`;
 
 					let userID = "0";
@@ -246,14 +250,15 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 						({ response, data, rateLimitReset } = await account.request<DT.PartialUser[]>(`/channels/${cachedChannel.id}/messages/${message.id}/reactions/${emoji}?limit=100&type=${reactionType}&after=${userID}`, restOptions, true));
 						if (abortSignal.aborted) throw abortError;
 						if (!response.ok) {
-							throw new ExpectedError(`Got HTTP ${response.status} ${response.statusText} while requesting reactions for the message with ID ${message.id} from #${cachedChannel.name}`);
+							throw new ExpectedError(`Got HTTP ${response.status} ${response.statusText} while requesting reactions for the message with ID ${message.id} from #${cachedChannel.name} (${cachedChannel.id})`);
 						}
 						const users = data!;
 
-						for (const user of users) {
-							reactionData.userIDs[i] = user.id;
-							i++;
-						}
+						reactionData.responses.push({
+							timestamp: Date.now(),
+							users,
+						});
+						count += users.length;
 
 						if (users.length < 100) {
 							break;
@@ -262,8 +267,8 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 					}
 					reactions.push(reactionData);
 
-					if (i !== expectedCount) {
-						log.verbose?.(`The reaction count (${expectedCount}) is different from the length of the list (${i}) of users who reacted to the message with ID ${message.id} from #${cachedChannel.name} (${cachedChannel.id}).`);
+					if (count !== expectedCount) {
+						log.verbose?.(`The reaction count (${expectedCount}) is different from the length of the list (${count}) of users who reacted to the message with ID ${message.id} from #${cachedChannel.name} (${cachedChannel.id}).`);
 					}
 				}
 			}
@@ -278,16 +283,31 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 				message: message,
 			});
 			for (const reactionData of reactions) {
-				db.request({
-					type: RequestType.AddInitialReactions,
-					messageID: message.id,
-					emoji: reactionData.emoji,
-					reactionType: reactionData.reactionType,
-					userIDs: reactionData.userIDs,
-				});
+				for (const { timestamp, users } of reactionData.responses) {
+					db.request({
+						type: RequestType.AddInitialReactions,
+						timestamp,
+						messageID: message.id,
+						emoji: reactionData.emoji,
+						reactionType: reactionData.reactionType,
+						users,
+					});
+				}
 			}
 		});
 		return await messageAddPromise!;
+	}
+
+	async function requestUser(account: Account, userID: string, abortSignal: AbortSignal): Promise<DT.PartialUser> {
+		const restOptions = mergeOptions(account.restOptions, { signal: abortSignal });
+
+		const { response, data } = await account.request<DT.PartialUser>(`/users/${userID}`, restOptions, true);
+		if (abortSignal.aborted) throw abortError;
+		if (!response.ok) {
+			throw new ExpectedError(`Got HTTP ${response.status} ${response.statusText} while requesting the user with ID ${userID}`);
+		}
+
+		return data!;
 	}
 
 	// SYNCING
@@ -1653,21 +1673,56 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 						}
 
 						case "MESSAGE_REACTION_ADD": {
-							const cachedChannel = getChannelOrThreadByIDs(payload.d.channel_id, payload.d.guild_id, payload.t);
+							const cachedChannel = getChannelOrThreadByIDs(payload.d.channel_id, payload.d.guild_id, payload.t) as CachedTextLikeChannel | CachedThread | undefined;
 							if (cachedChannel === undefined) break;
 
 							if (cachedChannel.options.reactionArchivalMode === "users" && cachedChannel.options.storeReactionEvents) {
 								await cachedChannel.guild?.initialSyncPromise;
+
+								const request: AddReactionPlacementRequest = {
+									type: RequestType.AddReactionPlacement,
+									messageID: payload.d.message_id,
+									emoji: payload.d.emoji,
+									reactionType: payload.d.burst ? DT.ReactionType.Burst : DT.ReactionType.Normal,
+									userID: payload.d.user_id,
+									user: payload.d.member?.user,
+									timing,
+								};
+
+								let responsePromise: Promise<SingleResponseFor<AddReactionPlacementRequest>>;
 								await db.transaction(async () => {
-									db.request({
-										type: RequestType.AddReactionPlacement,
-										messageID: payload.d.message_id,
-										emoji: payload.d.emoji,
-										reactionType: payload.d.burst ? 1 : 0,
-										userID: payload.d.user_id,
-										timing,
-									});
+									responsePromise = db.request(request);
 								});
+								const response = await responsePromise!;
+
+								if (response === AddReactionResult.MissingMessage) {
+									break;
+								}
+								if (response === AddReactionResult.MissingUser) {
+									// The user isn't in the database yet.
+									let user;
+									try {
+										user = await requestUser(account, payload.d.user_id, abortController.signal);
+									} catch (err) {
+										if (err instanceof ExpectedError) {
+											log.error?.(`Got an error while requesting the user with ID ${payload.d.user_id} missing from the database while archiving a reaction to a message from #${cachedChannel.name} (${cachedChannel.id}) ${err.toString()}.`);
+											break;
+										} else {
+											throw err;
+										}
+									}
+									await db.transaction(async () => {
+										db.request({
+											type: RequestType.AddUserSnapshot,
+											timing: {
+												timestamp,
+												realtime: false,
+											},
+											user,
+										});
+										db.request(request);
+									});
+								}
 							}
 							break;
 						}
@@ -1682,7 +1737,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 										type: RequestType.MarkReactionAsRemoved,
 										messageID: payload.d.message_id,
 										emoji: payload.d.emoji,
-										reactionType: payload.d.burst ? 1 : 0,
+										reactionType: payload.d.burst ? DT.ReactionType.Burst : DT.ReactionType.Normal,
 										userID: payload.d.user_id,
 										timing,
 									});

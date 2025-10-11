@@ -18,6 +18,17 @@ export const enum AddSnapshotResult {
 	PartialNoSnapshot,
 }
 
+export const enum AddReactionResult {
+	/** Added the reaction to the database. */
+	AddedReaction,
+	/** This reaction already existed. The database wasn't modified. */
+	AlreadyExists,
+	/** The referenced message is not in the database. The database wasn't modified. */
+	MissingMessage,
+	/** The referenced user is not in the database. The database wasn't modified. */
+	MissingUser,
+}
+
 export const enum RequestType {
 	Close,
 	BeginTransaction,
@@ -49,6 +60,7 @@ export const enum RequestType {
 	AddReactionPlacement,
 	MarkReactionAsRemoved,
 	MarkReactionsAsRemovedBulk,
+	GetReactionHistory,
 	AddGuildEmojiSnapshot,
 	MarkGuildEmojiAsDeleted,
 	UpdateEmojiUploaders,
@@ -186,24 +198,26 @@ export type GetMessagesRequest = {
 };
 export type AddInitialReactionsRequest = {
 	type: RequestType.AddInitialReactions;
+	timestamp: number;
 	messageID: string;
 	emoji: DT.PartialEmoji;
-	reactionType: 0 | 1;
-	userIDs: string[];
+	reactionType: DT.ReactionType;
+	users: DT.PartialUser[];
 };
 export type AddReactionPlacementRequest = {
 	type: RequestType.AddReactionPlacement;
 	messageID: string;
 	emoji: DT.PartialEmoji;
-	reactionType: 0 | 1;
+	reactionType: DT.ReactionType;
 	userID: string;
+	user?: DT.PartialUser | undefined;
 	timing: Timing;
 };
 export type MarkReactionAsRemovedRequest = {
 	type: RequestType.MarkReactionAsRemoved;
 	messageID: string;
 	emoji: DT.PartialEmoji;
-	reactionType: 0 | 1;
+	reactionType: DT.ReactionType;
 	userID: string;
 	timing: Timing;
 };
@@ -212,6 +226,10 @@ export type MarkReactionAsRemovedBulkRequest = {
 	messageID: string;
 	emoji: DT.PartialEmoji | null;
 	timing: Timing;
+};
+export type GetReactionsHistoryRequest = {
+	type: RequestType.GetReactionHistory;
+	messageID: string;
 };
 export type AddGuildEmojiSnapshotRequest = {
 	type: RequestType.AddGuildEmojiSnapshot;
@@ -323,6 +341,7 @@ export type IteratorRequest =
 	GetThreadsRequest |
 	GetForumTagsRequest |
 	GetMessagesRequest |
+	GetReactionsHistoryRequest |
 	GetGuildEmojisRequest |
 	GetFilesRequest |
 	SearchMessagesRequest;
@@ -350,9 +369,9 @@ export type SingleResponseFor<R extends SingleRequest> =
 	R extends AddMessageSnapshotRequest ? AddSnapshotResult :
 	R extends MarkMessageAsDeletedRequest ? boolean :
 	R extends AddInitialReactionsRequest ? void :
-	R extends AddReactionPlacementRequest ? void :
-	R extends MarkReactionAsRemovedRequest ? void :
-	R extends MarkReactionAsRemovedBulkRequest ? void :
+	R extends AddReactionPlacementRequest ? AddReactionResult :
+	R extends MarkReactionAsRemovedRequest ? boolean :
+	R extends MarkReactionAsRemovedBulkRequest ? number :
 	R extends AddGuildEmojiSnapshotRequest ? AddSnapshotResult :
 	R extends MarkGuildEmojiAsDeletedRequest ? boolean :
 	R extends UpdateEmojiUploadersRequest ? void :
@@ -401,6 +420,13 @@ export type IteratorResponseFor<R extends IteratorRequest> =
 	R extends GetThreadsRequest ? ObjectSnapshotResponse<DT.Thread> :
 	R extends GetForumTagsRequest ? ObjectSnapshotResponse<DT.ForumTag> :
 	R extends GetMessagesRequest ? ObjectSnapshotResponse<DT.Message> :
+	R extends GetReactionsHistoryRequest ? {
+		start: Timing;
+		end: Timing | null;
+		emoji: DT.PartialEmoji;
+		type: DT.ReactionType;
+		user: DT.PartialUser;
+	} :
 	R extends GetGuildEmojisRequest ? ObjectSnapshotResponse<CustomEmojiData> :
 	R extends SearchMessagesRequest ? {
 		_timestamp: bigint;
