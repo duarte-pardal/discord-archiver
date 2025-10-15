@@ -337,7 +337,6 @@ export type SingleRequest =
 	MarkGuildEmojiAsDeletedRequest |
 	UpdateEmojiUploadersRequest |
 	CheckForMissingEmojiUploadersRequest |
-	GetGuildEmojisRequest |
 	GetFileRequest |
 	GetFileHashUtilizationRequest |
 	AddFileRequest |

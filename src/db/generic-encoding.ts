@@ -358,9 +358,9 @@ const schemas: { [OT in ObjectType]: Schema<InputObjectType[OT]> } = {
 		["timestamp", "ignore"],
 		["edited_timestamp", ValueType.Timestamp, NullValue.Null],
 		["tts", ValueType.Boolean],
-		["mention_everyone", "ignore"], // not archived
-		["mentions", "ignore"], // not archived
-		["mention_roles", "ignore"], // not archived
+		["mention_everyone", ValueType.StrictBoolean],
+		["mentions", "ignore"], // archived separately
+		["mention_roles", ValueType.BigIntegerArray],
 		["mention_channels", "ignore"], // not archived
 		["attachments", "ignore"],
 		["embeds", "extra", NullValue.EmptyArray],

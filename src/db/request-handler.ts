@@ -221,7 +221,7 @@ SELECT _user_id AS id FROM member_snapshots WHERE _guild_id IS :$parentID AND _t
 		thread: getStatements("thread", "parent_id", ["name", "rate_limit_per_user", "owner_id", "thread_metadata__archived", "thread_metadata__auto_archive_duration", "thread_metadata__archive_timestamp", "thread_metadata__locked", "thread_metadata__invitable", "thread_metadata__create_timestamp", "flags", "applied_tags"], ["parent_id", "type"]),
 		forumTag: getStatements("forum_tag", "channel_id", ["name", "moderated", "emoji"], ["channel_id"]),
 		message: {
-			...getStatements("message", "channel_id", ["content", "edited_timestamp", "flags", "_attachment_ids"], ["channel_id", "author__id", "tts", "type", "message_reference__message_id", "message_reference__channel_id", "message_reference__guild_id", "_sticker_ids"]),
+			...getStatements("message", "channel_id", ["content", "edited_timestamp", "mention_everyone", "_mention_ids", "mention_roles", "flags", "_attachment_ids"], ["channel_id", "author__id", "tts", "type", "message_reference__message_id", "message_reference__channel_id", "message_reference__guild_id", "_sticker_ids"]),
 			// BUG: Search is broken on threads.
 			search: db.prepare(`\
 SELECT
@@ -478,11 +478,6 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _guild_id = :_guild_id AND _del
 		message.timestamp = new Date(Number(snowflakeToTimestamp(snapshot.id))).toISOString();
 		message.pinned = false;
 
-		// Can be computed from the message content but it's irrelevant for now.
-		message.mentions = [];
-		message.mention_roles = [];
-		message.mention_everyone = false;
-
 		if (BigInt(snapshot.author__id) < SNOWFLAKE_LOWER_BOUND) {
 			const webhookUser: any = statements.getWebhookUser.get({ internal_id: snapshot.author__id });
 			message.webhook_id = String(webhookUser.webhook_id);
@@ -501,6 +496,11 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _guild_id = :_guild_id AND _del
 		} else {
 			delete message.webhook_id;
 			message.author = getObjectSnapshot(objectStatements.user, snapshot.author__id, timestamp, decodeUser)!.data;
+		}
+
+		message.mentions = [];
+		for (const id of decodeSnowflakeArray(snapshot._mention_ids)) {
+			message.mentions.push(getObjectSnapshot(objectStatements.user, id, timestamp, decodeUser)!.data);
 		}
 
 		message.attachments = [];
@@ -863,6 +863,7 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _guild_id = :_guild_id AND _del
 
 				const msg = encodeObject(ObjectType.Message, req.message);
 
+				msg._mention_ids = encodeSnowflakeArray((req.message.mentions).map(u => u.id));
 				msg._attachment_ids = encodeSnowflakeArray((req.message.attachments).map(a => a.id));
 				msg._sticker_ids =
 					req.message.sticker_items == null || req.message.sticker_items.length === 0 ?

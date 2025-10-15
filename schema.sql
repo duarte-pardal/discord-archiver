@@ -379,7 +379,10 @@ CREATE TABLE latest_message_snapshots (
 	_timestamp INTEGER NOT NULL,
 	_extra TEXT,
 	content TEXT, -- contents of the message
-	edited_timestamp INTEGER, -- When this message was edited (or null if never)
+	edited_timestamp INTEGER, -- when this message was edited (or null if never)
+	mention_everyone INTEGER NOT NULL, -- whether this message mentions everyone
+	_mention_ids BLOB, -- IDs of users specifically mentioned in the message
+	mention_roles BLOB, -- IDs of roles specifically mentioned in this message
 	flags INTEGER, -- message flags combined as a bitfield
 	_attachment_ids BLOB -- IDs of the attachments in the message, stored as 64-bit big-endian integers concatenated
 );
@@ -402,6 +405,9 @@ CREATE TABLE previous_message_snapshots (
 	_extra TEXT,
 	content TEXT, -- contents of the message
 	edited_timestamp INTEGER, -- When this message was edited (or null if never)
+	mention_everyone INTEGER NOT NULL, -- whether this message mentions everyone
+	_mention_ids BLOB, -- IDs of users specifically mentioned in the message
+	mention_roles BLOB, -- IDs of roles specifically mentioned in this message
 	flags INTEGER, -- message flags combined as a bitfield
 	_attachment_ids BLOB, -- IDs of the attachments in the message, stored as 64-bit big-endian integers concatenated
 	UNIQUE (id, _timestamp)

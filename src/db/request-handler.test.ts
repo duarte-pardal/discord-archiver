@@ -3106,6 +3106,211 @@ const messages: MessageEntry[] = [
 			],
 		},
 	},
+	{
+		options: { name: "message that mentions a user" },
+		data: {
+			type: 0,
+			content: "Hey <@1200964506852012183>, come look at this.",
+			mentions: [
+				{
+					id: "1200964506852012183",
+					username: "another_acc_archiver_test",
+					avatar: null,
+					discriminator: "0",
+					public_flags: 0,
+					flags: 0,
+					banner: null,
+					accent_color: null,
+					global_name: "Another Account",
+					avatar_decoration_data: null,
+					collectibles: null,
+					display_name_styles: null,
+					banner_color: null,
+					clan: null,
+					primary_guild: null,
+				},
+			],
+			mention_roles: [],
+			attachments: [],
+			embeds: [],
+			timestamp: "2025-10-15T22:08:28.508000+00:00",
+			edited_timestamp: null,
+			flags: 0,
+			components: [],
+			id: "1428142512178073712",
+			channel_id: "1367557310872031334",
+			author: {
+				id: "1367556342314827907",
+				username: "archivertestserverowner_33925",
+				avatar: null,
+				discriminator: "0",
+				public_flags: 0,
+				flags: 0,
+				banner: null,
+				accent_color: null,
+				global_name: "Archiver Test Server Owner",
+				avatar_decoration_data: null,
+				collectibles: null,
+				display_name_styles: null,
+				banner_color: null,
+				clan: null,
+				primary_guild: null,
+			},
+			pinned: false,
+			mention_everyone: false,
+			tts: false,
+		},
+	},
+	{
+		options: { name: "message that mentions @everyone" },
+		data: {
+			type: 0,
+			content: "@everyone get pinged lol",
+			mentions: [],
+			mention_roles: [],
+			attachments: [],
+			embeds: [],
+			timestamp: "2025-10-15T22:09:25.111000+00:00",
+			edited_timestamp: null,
+			flags: 0,
+			components: [],
+			id: "1428142749588131921",
+			channel_id: "1367557310872031334",
+			author: {
+				id: "1367556342314827907",
+				username: "archivertestserverowner_33925",
+				avatar: null,
+				discriminator: "0",
+				public_flags: 0,
+				flags: 0,
+				banner: null,
+				accent_color: null,
+				global_name: "Archiver Test Server Owner",
+				avatar_decoration_data: null,
+				collectibles: null,
+				display_name_styles: null,
+				banner_color: null,
+				clan: null,
+				primary_guild: null,
+			},
+			pinned: false,
+			mention_everyone: true,
+			tts: false,
+		},
+	},
+	{
+		options: { name: "message that mentions a role" },
+		data: {
+			type: 0,
+			content: "I can ping <@&1367558991449817190>.",
+			mentions: [],
+			mention_roles: [
+				"1367558991449817190",
+			],
+			attachments: [],
+			embeds: [],
+			timestamp: "2025-10-15T22:10:04.080000+00:00",
+			edited_timestamp: null,
+			flags: 0,
+			components: [],
+			id: "1428142913035960322",
+			channel_id: "1367557310872031334",
+			author: {
+				id: "1367556342314827907",
+				username: "archivertestserverowner_33925",
+				avatar: null,
+				discriminator: "0",
+				public_flags: 0,
+				flags: 0,
+				banner: null,
+				accent_color: null,
+				global_name: "Archiver Test Server Owner",
+				avatar_decoration_data: null,
+				collectibles: null,
+				display_name_styles: null,
+				banner_color: null,
+				clan: null,
+				primary_guild: null,
+			},
+			pinned: false,
+			mention_everyone: false,
+			tts: false,
+		},
+	},
+	{
+		options: { name: "message with a failed attempt at mentioning @everyone" },
+		data: {
+			type: 0,
+			content: "I can't ping @everyone.",
+			mentions: [],
+			mention_roles: [],
+			attachments: [],
+			embeds: [],
+			timestamp: "2025-10-15T22:12:29.060000+00:00",
+			edited_timestamp: null,
+			flags: 0,
+			components: [],
+			id: "1428143521126289549",
+			channel_id: "1367557310872031334",
+			author: {
+				id: "1200964506852012183",
+				username: "another_acc_archiver_test",
+				avatar: null,
+				discriminator: "0",
+				public_flags: 0,
+				flags: 0,
+				banner: null,
+				accent_color: null,
+				global_name: "Another Account",
+				avatar_decoration_data: null,
+				collectibles: null,
+				display_name_styles: null,
+				banner_color: null,
+				clan: null,
+				primary_guild: null,
+			},
+			pinned: false,
+			mention_everyone: false,
+			tts: false,
+		},
+	},
+	{
+		options: { name: "message with a failed attempt at mentioning a role" },
+		data: {
+			type: 0,
+			content: "I can't ping <@&1367558991449817190>.",
+			mentions: [],
+			mention_roles: [],
+			attachments: [],
+			embeds: [],
+			timestamp: "2025-10-15T22:11:31.917000+00:00",
+			edited_timestamp: null,
+			flags: 0,
+			components: [],
+			id: "1428143281451302983",
+			channel_id: "1367557310872031334",
+			author: {
+				id: "1200964506852012183",
+				username: "another_acc_archiver_test",
+				avatar: null,
+				discriminator: "0",
+				public_flags: 0,
+				flags: 0,
+				banner: null,
+				accent_color: null,
+				global_name: "Another Account",
+				avatar_decoration_data: null,
+				collectibles: null,
+				display_name_styles: null,
+				banner_color: null,
+				clan: null,
+				primary_guild: null,
+			},
+			pinned: false,
+			mention_everyone: false,
+			tts: false,
+		},
+	},
 ];
 
 const messageEdits: {
@@ -3497,11 +3702,6 @@ function stripMessage(message: Partial<Message>) {
 	}
 
 	message.pinned = false;
-	// TODO: Archive mentions
-	message.mentions = [];
-	message.mention_roles = [];
-	message.mention_everyone = false;
-
 
 	delete message.position;
 	delete message.thread;
@@ -3518,6 +3718,9 @@ function stripMessage(message: Partial<Message>) {
 	delete message.activity_instance;
 
 	stripUser(message.author!);
+	for (const user of message.mentions ?? []) {
+		stripUser(user);
+	}
 	if (message.referenced_message != null) {
 		stripMessage(message.referenced_message);
 	}
@@ -3589,14 +3792,13 @@ for (const emoji of guild.emojis) {
 }
 
 
-async function compareLatestSnapshots<R extends GetGuildsRequest | GetGuildMembersRequest | GetChannelsRequest | GetThreadsRequest | GetMessagesRequest | GetRolesRequest | GetForumTagsRequest | GetGuildEmojisRequest, T>(
+async function compareLatestSnapshots<Snapshot, Entry>(
 	t: TestContext,
-	req: R,
-	entries: Iterable<T>,
-	callback: (original: T, snapshots: IteratorResponseFor<R>[], t: TestContext) => Promise<{ expectedObject: unknown; snapshot: IteratorResponseFor<R> }>,
-	testOptionsCallback: (original: T) => { name: string; skip?: boolean | string },
+	snapshots: Snapshot[],
+	entries: Iterable<Entry>,
+	callback: (original: Entry, snapshots: Snapshot[], t: TestContext) => Promise<{ expectedObject: unknown; snapshot: Snapshot }>,
+	testOptionsCallback: (original: Entry) => { name: string; skip?: boolean | string },
 ) {
-	const snapshots = [...request(req)];
 	let i = 0;
 	for (const entry of entries) {
 		const testOptions = testOptionsCallback(entry);
@@ -3604,14 +3806,11 @@ async function compareLatestSnapshots<R extends GetGuildsRequest | GetGuildMembe
 			const { expectedObject, snapshot } = await callback(entry, snapshots, t);
 			assertEqual({
 				expected: {
-					timing: req.type === RequestType.GetMessages ? null : guildSnapshotTiming,
+					timing: guildSnapshotTiming,
 					deletedTiming: null,
 					data: expectedObject,
 				},
-				actual: {
-					...snapshot,
-					...(req.type === RequestType.GetMessages ? { timing: null } : {}),
-				},
+				actual: snapshot,
 			});
 		});
 		i++;
@@ -3624,9 +3823,9 @@ async function compareLatestSnapshots<R extends GetGuildsRequest | GetGuildMembe
 await Promise.all([
 	test("latest guild snapshots match", (t) => compareLatestSnapshots(
 		t,
-		{
+		[...request({
 			type: RequestType.GetGuilds,
-		} satisfies GetGuildsRequest,
+		} satisfies GetGuildsRequest)],
 		[guild],
 		async (original, snapshots) => {
 			const snapshot = snapshots.find(s => s.data.id === original.id);
@@ -3638,10 +3837,10 @@ await Promise.all([
 	)),
 	test("latest member snapshots match", (t) => compareLatestSnapshots(
 		t,
-		{
+		[...request({
 			type: RequestType.GetGuildMembers,
 			guildID: guild.id,
-		},
+		} satisfies GetGuildMembersRequest)],
 		guildMembers,
 		async (original, snapshots) => {
 			const snapshot = snapshots.find(s => s.data.user.id === original.data.user.id);
@@ -3652,10 +3851,10 @@ await Promise.all([
 	)),
 	test("latest channel snapshots match", (t) => compareLatestSnapshots(
 		t,
-		{
+		[...request({
 			type: RequestType.GetChannels,
 			guildID: guild.id,
-		},
+		} satisfies GetChannelsRequest)],
 		guild.channels,
 		async (channel, snapshots, t) => {
 			const snapshot = snapshots.find(s => s.data.id === channel.id);
@@ -3663,10 +3862,10 @@ await Promise.all([
 			if (channel.available_tags != null) {
 				await t.test("latest forum tags snapshots match", (t) => compareLatestSnapshots(
 					t,
-					{
+					[...request({
 						type: RequestType.GetForumTags,
 						channelID: channel.id,
-					},
+					} satisfies GetForumTagsRequest)],
 					channel.available_tags as Iterable<unknown>,
 					async (tag: any, snapshots) => {
 						const snapshot = snapshots.find(s => s.data.id === tag.id);
@@ -3685,10 +3884,10 @@ await Promise.all([
 	)),
 	test("latest thread snapshots match", (t) => compareLatestSnapshots(
 		t,
-		{
+		[...request({
 			type: RequestType.GetThreads,
 			parentID: "1367557310872031334",
-		},
+		} satisfies GetThreadsRequest)],
 		guild.threads,
 		async (original, snapshots) => {
 			const snapshot = snapshots.find(s => s.data.id === original.id);
@@ -3699,30 +3898,30 @@ await Promise.all([
 	)),
 	test("latest message snapshots match", async (t) => {
 		const channelsWithMessages: string[] = [...new Set(messages.map(entry => entry.data.channel_id))];
-		for (const channelID of channelsWithMessages) {
-			await compareLatestSnapshots(
-				t,
-				{
+		await compareLatestSnapshots(
+			t,
+			channelsWithMessages
+				.map(channelID => [...request({
 					type: RequestType.GetMessages,
 					channelID,
-				},
-				messages.filter(entry => entry.data.channel_id === channelID),
-				async (original, snapshots) => {
-					const snapshot = snapshots.find(s => s.data.id === original.data.id);
-					assert(snapshot !== undefined, "message wasn't archived");
-					stripMessage(snapshot.data);
-					return { expectedObject: original.data, snapshot };
-				},
-				entry => entry.options,
-			);
-		}
+				} satisfies GetMessagesRequest)])
+				.flat(),
+			messages,
+			async (original, snapshots) => {
+				const snapshot = snapshots.find(s => s.data.id === original.data.id);
+				assert(snapshot !== undefined, "message wasn't archived");
+				stripMessage(snapshot.data);
+				return { expectedObject: original.data, snapshot };
+			},
+			entry => entry.options,
+		);
 	}),
 	test("latest role snapshots match", (t) => compareLatestSnapshots(
 		t,
-		{
+		[...request({
 			type: RequestType.GetRoles,
 			guildID: guild.id,
-		},
+		} satisfies GetRolesRequest)],
 		guild.roles,
 		async (original, snapshots) => {
 			const snapshot = snapshots.find(s => s.data.id === original.id);
@@ -3733,10 +3932,10 @@ await Promise.all([
 	)),
 	test("latest emoji snapshots match", (t) => compareLatestSnapshots(
 		t,
-		{
+		[...request({
 			type: RequestType.GetGuildEmojis,
 			guildID: guild.id,
-		},
+		} satisfies GetGuildEmojisRequest)],
 		guild.emojis,
 		async (original, snapshots) => {
 			const snapshot = snapshots.find(s => s.data.id === original.id);
@@ -3776,10 +3975,10 @@ request({
 await Promise.all([
 	test("emojis have uploaders", (t) => compareLatestSnapshots(
 		t,
-		{
+		[...request({
 			type: RequestType.GetGuildEmojis,
 			guildID: guild.id,
-		},
+		} satisfies GetGuildEmojisRequest)],
 		guild.emojis,
 		async (original, snapshots) => {
 			const snapshot = snapshots.find(s => s.data.id === original.id);
