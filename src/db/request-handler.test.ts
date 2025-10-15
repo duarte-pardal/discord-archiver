@@ -732,6 +732,39 @@ const messages: MessageEntry[] = [
 		},
 	},
 	{
+		options: { name: "regular webhook message" },
+		data: {
+			type: 0,
+			content: "Webhook message",
+			mentions: [],
+			mention_roles: [],
+			attachments: [],
+			embeds: [],
+			timestamp: "2025-05-03T15:31:24.207000+00:00",
+			edited_timestamp: null,
+			flags: 0,
+			components: [],
+			id: "1368248587993092137",
+			channel_id: "1367557310872031334",
+			author: {
+				id: "1368247842057224234",
+				username: "Spidey Bot",
+				avatar: "231c98afcd5adb3ef8363c49c511cc66",
+				discriminator: "0000",
+				public_flags: 0,
+				flags: 0,
+				bot: true,
+				global_name: null,
+				clan: null,
+				primary_guild: null,
+			},
+			pinned: false,
+			mention_everyone: false,
+			tts: false,
+			webhook_id: "1368247842057224234",
+		},
+	},
+	{
 		options: { name: "reply" },
 		data: {
 			type: 19,
@@ -846,39 +879,6 @@ const messages: MessageEntry[] = [
 				guild_id: "1367557310418784356",
 			},
 			referenced_message: null,
-		},
-	},
-	{
-		options: { name: "regular webhook message" },
-		data: {
-			type: 0,
-			content: "Webhook message",
-			mentions: [],
-			mention_roles: [],
-			attachments: [],
-			embeds: [],
-			timestamp: "2025-05-03T15:31:24.207000+00:00",
-			edited_timestamp: null,
-			flags: 0,
-			components: [],
-			id: "1368248587993092137",
-			channel_id: "1367557310872031334",
-			author: {
-				id: "1368247842057224234",
-				username: "Spidey Bot",
-				avatar: "231c98afcd5adb3ef8363c49c511cc66",
-				discriminator: "0000",
-				public_flags: 0,
-				flags: 0,
-				bot: true,
-				global_name: null,
-				clan: null,
-				primary_guild: null,
-			},
-			pinned: false,
-			mention_everyone: false,
-			tts: false,
-			webhook_id: "1368247842057224234",
 		},
 	},
 	{
@@ -1031,6 +1031,67 @@ const messages: MessageEntry[] = [
 		},
 	},
 	{
+		options: { name: "message used to start a thread" },
+		data: {
+			type: 0,
+			content: "A thread will be created from this message",
+			mentions: [],
+			mention_roles: [],
+			attachments: [],
+			embeds: [],
+			timestamp: "2025-09-01T21:24:32.631000+00:00",
+			edited_timestamp: null,
+			flags: 32,
+			components: [],
+			id: "1412186390422360208",
+			channel_id: "1367557310872031334",
+			author: {
+				id: "1367556342314827907",
+				username: "archivertestserverowner_33925",
+				avatar: null,
+				discriminator: "0",
+				public_flags: 0,
+				flags: 0,
+				banner: null,
+				accent_color: null,
+				global_name: "Archiver Test Server Owner",
+				avatar_decoration_data: null,
+				collectibles: null,
+				display_name_styles: null,
+				banner_color: null,
+				clan: null,
+				primary_guild: null,
+			},
+			pinned: false,
+			mention_everyone: false,
+			tts: false,
+			thread: {
+				id: "1412186390422360208",
+				type: 11,
+				last_message_id: "1412186603056533614",
+				flags: 0,
+				guild_id: "1367557310418784356",
+				name: "Thread created from a message",
+				parent_id: "1367557310872031334",
+				rate_limit_per_user: 0,
+				bitrate: 64000,
+				user_limit: 0,
+				rtc_region: null,
+				owner_id: "1367556342314827907",
+				thread_metadata: {
+					archived: false,
+					archive_timestamp: "2025-09-01T21:25:22.574000+00:00",
+					auto_archive_duration: 4320,
+					locked: false,
+					create_timestamp: "2025-09-01T21:25:22.574000+00:00",
+				},
+				message_count: 1,
+				member_count: 1,
+				total_message_sent: 1,
+			},
+		},
+	},
+	{
 		options: { name: "thread starter message" },
 		data: {
 			type: 21,
@@ -1133,7 +1194,122 @@ const messages: MessageEntry[] = [
 		},
 	},
 	{
-		options: { name: "forwarded message" },
+		options: { name: "first message in thread" },
+		data: {
+			type: 0,
+			content: "First message in the thread",
+			mentions: [],
+			mention_roles: [],
+			attachments: [],
+			embeds: [],
+			timestamp: "2025-08-18T20:53:31.005000+00:00",
+			edited_timestamp: null,
+			flags: 0,
+			components: [],
+			id: "1407105152078450748",
+			channel_id: "1407105149037576367",
+			author: {
+				id: "1367556342314827907",
+				username: "archivertestserverowner_33925",
+				avatar: null,
+				discriminator: "0",
+				public_flags: 0,
+				flags: 0,
+				banner: null,
+				accent_color: null,
+				global_name: "Archiver Test Server Owner",
+				avatar_decoration_data: null,
+				collectibles: null,
+				display_name_styles: null,
+				banner_color: null,
+				clan: null,
+				primary_guild: null,
+			},
+			pinned: false,
+			mention_everyone: false,
+			tts: false,
+		},
+	},
+	{
+		options: { name: "reply in thread" },
+		data: {
+			type: 19,
+			content: "So true",
+			mentions: [],
+			mention_roles: [],
+			attachments: [],
+			embeds: [],
+			timestamp: "2025-10-11T20:35:18.461000+00:00",
+			edited_timestamp: null,
+			flags: 0,
+			components: [],
+			id: "1426669514359181445",
+			channel_id: "1407105149037576367",
+			author: {
+				id: "1367556342314827907",
+				username: "archivertestserverowner_33925",
+				avatar: null,
+				discriminator: "0",
+				public_flags: 0,
+				flags: 0,
+				banner: null,
+				accent_color: null,
+				global_name: "Archiver Test Server Owner",
+				avatar_decoration_data: null,
+				collectibles: null,
+				display_name_styles: null,
+				banner_color: null,
+				clan: null,
+				primary_guild: null,
+			},
+			pinned: false,
+			mention_everyone: false,
+			tts: false,
+			message_reference: {
+				type: 0,
+				channel_id: "1407105149037576367",
+				message_id: "1407105152078450748",
+				guild_id: "1367557310418784356",
+			},
+			position: 1,
+			referenced_message: {
+				type: 0,
+				content: "First message in the thread",
+				mentions: [],
+				mention_roles: [],
+				attachments: [],
+				embeds: [],
+				timestamp: "2025-08-18T20:53:31.005000+00:00",
+				edited_timestamp: null,
+				flags: 0,
+				components: [],
+				id: "1407105152078450748",
+				channel_id: "1407105149037576367",
+				author: {
+					id: "1367556342314827907",
+					username: "archivertestserverowner_33925",
+					avatar: null,
+					discriminator: "0",
+					public_flags: 0,
+					flags: 0,
+					banner: null,
+					accent_color: null,
+					global_name: "Archiver Test Server Owner",
+					avatar_decoration_data: null,
+					collectibles: null,
+					display_name_styles: null,
+					banner_color: null,
+					clan: null,
+					primary_guild: null,
+				},
+				pinned: false,
+				mention_everyone: false,
+				tts: false,
+			},
+		},
+	},
+	{
+		options: { name: "forwarded message from the same channel" },
 		data: {
 			type: 0,
 			content: "",
@@ -2694,6 +2870,242 @@ const messages: MessageEntry[] = [
 			tts: false,
 		},
 	},
+	{
+		options: { name: "follow add announcement" },
+		data: 	{
+			type: 12,
+			content: "Archiver Test Server #announcement-channel",
+			mentions: [],
+			mention_roles: [],
+			attachments: [],
+			embeds: [],
+			timestamp: "2025-10-11T21:01:32.684000+00:00",
+			edited_timestamp: null,
+			flags: 0,
+			components: [],
+			id: "1426676117129138337",
+			channel_id: "1367557310872031334",
+			author: {
+				id: "1200964506852012183",
+				username: "another_acc_archiver_test",
+				avatar: null,
+				discriminator: "0",
+				public_flags: 0,
+				flags: 0,
+				banner: null,
+				accent_color: null,
+				global_name: "Another Account",
+				avatar_decoration_data: null,
+				collectibles: null,
+				display_name_styles: null,
+				banner_color: null,
+				clan: null,
+				primary_guild: null,
+			},
+			pinned: false,
+			mention_everyone: false,
+			tts: false,
+			message_reference: {
+				type: 0,
+				channel_id: "1367562032794046646",
+				guild_id: "1367557310418784356",
+			},
+		},
+	},
+	{
+		options: { name: "message in announcement channel" },
+		data: {
+			type: 0,
+			content: "This message was sent in the announcement channel",
+			mentions: [],
+			mention_roles: [],
+			attachments: [],
+			embeds: [],
+			timestamp: "2025-10-11T21:50:07.459000+00:00",
+			edited_timestamp: null,
+			flags: 1,
+			components: [],
+			id: "1426688342581575832",
+			channel_id: "1367562032794046646",
+			author: {
+				id: "1367556342314827907",
+				username: "archivertestserverowner_33925",
+				avatar: null,
+				discriminator: "0",
+				public_flags: 0,
+				flags: 0,
+				banner: null,
+				accent_color: null,
+				global_name: "Archiver Test Server Owner",
+				avatar_decoration_data: null,
+				collectibles: null,
+				display_name_styles: null,
+				banner_color: null,
+				clan: null,
+				primary_guild: null,
+			},
+			pinned: false,
+			mention_everyone: false,
+			tts: false,
+		},
+	},
+	{
+		options: { name: "crossposted message" },
+		data: {
+			type: 0,
+			content: "This message was sent in the announcement channel",
+			mentions: [],
+			mention_roles: [],
+			attachments: [],
+			embeds: [],
+			timestamp: "2025-10-11T21:50:10.565000+00:00",
+			edited_timestamp: null,
+			flags: 2,
+			components: [],
+			id: "1426688355608956949",
+			channel_id: "1367557310872031334",
+			author: {
+				id: "1426676116478758932",
+				username: "Archiver Test Server #announcement-channel",
+				avatar: "95ab8c48fea2f25d538963dbd34a9332",
+				discriminator: "0000",
+				public_flags: 0,
+				flags: 0,
+				bot: true,
+				global_name: null,
+				clan: null,
+				primary_guild: null,
+			},
+			pinned: false,
+			mention_everyone: false,
+			tts: false,
+			webhook_id: "1426676116478758932",
+			message_reference: {
+				type: 0,
+				channel_id: "1367562032794046646",
+				message_id: "1426688342581575832",
+				guild_id: "1367557310418784356",
+			},
+		},
+	},
+	{
+		options: { name: "forwarded message from a different channel in the same server" },
+		data: {
+			type: 0,
+			content: "",
+			mentions: [],
+			mention_roles: [],
+			attachments: [],
+			embeds: [],
+			timestamp: "2025-10-15T13:50:25.717000+00:00",
+			edited_timestamp: null,
+			flags: 16384,
+			components: [],
+			id: "1428017174668378284",
+			channel_id: "1367557310872031334",
+			author: {
+				id: "1367556342314827907",
+				username: "archivertestserverowner_33925",
+				avatar: null,
+				discriminator: "0",
+				public_flags: 0,
+				flags: 0,
+				banner: null,
+				accent_color: null,
+				global_name: "Archiver Test Server Owner",
+				avatar_decoration_data: null,
+				collectibles: null,
+				display_name_styles: null,
+				banner_color: null,
+				clan: null,
+				primary_guild: null,
+			},
+			pinned: false,
+			mention_everyone: false,
+			tts: false,
+			message_reference: {
+				type: 1,
+				channel_id: "1367562032794046646",
+				message_id: "1426688342581575832",
+				guild_id: "1367557310418784356",
+			},
+			message_snapshots: [
+				{
+					message: {
+						type: 0,
+						content: "This message was sent in the announcement channel",
+						mentions: [],
+						mention_roles: [],
+						attachments: [],
+						embeds: [],
+						timestamp: "2025-10-11T21:50:07.459000+00:00",
+						edited_timestamp: null,
+						flags: 1,
+						components: [],
+					},
+				},
+			],
+		},
+	},
+	{
+		options: { name: "forwarded message from a different server" },
+		data: {
+			type: 0,
+			content: "",
+			mentions: [],
+			mention_roles: [],
+			attachments: [],
+			embeds: [],
+			timestamp: "2025-10-15T13:53:27.844000+00:00",
+			edited_timestamp: null,
+			flags: 16384,
+			components: [],
+			id: "1428017938564255818",
+			channel_id: "1367557310872031334",
+			author: {
+				id: "1367556342314827907",
+				username: "archivertestserverowner_33925",
+				avatar: null,
+				discriminator: "0",
+				public_flags: 0,
+				flags: 0,
+				banner: null,
+				accent_color: null,
+				global_name: "Archiver Test Server Owner",
+				avatar_decoration_data: null,
+				collectibles: null,
+				display_name_styles: null,
+				banner_color: null,
+				clan: null,
+				primary_guild: null,
+			},
+			pinned: false,
+			mention_everyone: false,
+			tts: false,
+			message_reference: {
+				type: 1,
+				channel_id: "1428017879634284546",
+				message_id: "1428017920558239786",
+				guild_id: "1428017878442967073",
+			},
+			message_snapshots: [
+				{
+					message: {
+						type: 0,
+						content: "Hello!",
+						mentions: [],
+						mention_roles: [],
+						attachments: [],
+						embeds: [],
+						timestamp: "2025-10-15T13:53:23.551000+00:00",
+						edited_timestamp: null,
+						flags: 0,
+						components: [],
+					},
+				},
+			],
+		},
+	},
 ];
 
 const messageEdits: {
@@ -2879,7 +3291,6 @@ const messageEdits: {
 	},
 ];
 
-
 function deleteNullPropsRecursive(actual: any, expected: any) {
 	for (const key in actual) {
 		if (expected[key] === undefined && actual[key] === null) {
@@ -2999,12 +3410,13 @@ for (const thread of guild.threads) {
 }
 
 for (const { data: message } of messages) {
-	assert.equal(request({
+	const newLocal = request({
 		type: RequestType.AddMessageSnapshot,
 		message,
 		timing: guildSnapshotTiming,
 		timestamp: guildSnapshotTiming.timestamp,
-	}), AddSnapshotResult.AddedFirstSnapshot);
+	});
+	assert.equal(newLocal, AddSnapshotResult.AddedFirstSnapshot);
 }
 
 function stripGuild(guild: Partial<GatewayGuildCreateDispatchPayload["d"]>) {
@@ -3285,21 +3697,26 @@ await Promise.all([
 		},
 		thread => ({ name: thread.name }),
 	)),
-	test("latest message snapshots match", (t) => compareLatestSnapshots(
-		t,
-		{
-			type: RequestType.GetMessages,
-			channelID: "1367557310872031334",
-		},
-		messages.filter(entry => entry.data.channel_id === "1367557310872031334"),
-		async (original, snapshots) => {
-			const snapshot = snapshots.find(s => s.data.id === original.data.id);
-			assert(snapshot !== undefined, "message wasn't archived");
-			stripMessage(snapshot.data);
-			return { expectedObject: original.data, snapshot };
-		},
-		entry => entry.options,
-	)),
+	test("latest message snapshots match", async (t) => {
+		const channelsWithMessages: string[] = [...new Set(messages.map(entry => entry.data.channel_id))];
+		for (const channelID of channelsWithMessages) {
+			await compareLatestSnapshots(
+				t,
+				{
+					type: RequestType.GetMessages,
+					channelID,
+				},
+				messages.filter(entry => entry.data.channel_id === channelID),
+				async (original, snapshots) => {
+					const snapshot = snapshots.find(s => s.data.id === original.data.id);
+					assert(snapshot !== undefined, "message wasn't archived");
+					stripMessage(snapshot.data);
+					return { expectedObject: original.data, snapshot };
+				},
+				entry => entry.options,
+			);
+		}
+	}),
 	test("latest role snapshots match", (t) => compareLatestSnapshots(
 		t,
 		{
@@ -3474,6 +3891,44 @@ await test("messages can be marked as deleted", () => {
 			deletedEntries.find(entry => entry.data.id === snapshot.data.id)?.deletedTiming ?? null,
 		);
 	}
+});
+
+await test("message references are stored correctly", async (t) => {
+	async function testMessageReference(messageID: string, refChannelID: bigint | null, refGuildID: bigint | null) {
+		const entry = messages.find(e => e.data.id === messageID)!;
+		await t.test(entry.options, () => {
+			const message = entry.data;
+			const data = [...requestHandler({
+				type: RequestType.Execute,
+				sql: `SELECT message_reference__channel_id, message_reference__guild_id FROM latest_message_snapshots WHERE id = ${message.id}`,
+			})][0];
+			if (refChannelID != null) assert.equal(data.message_reference__channel_id, refChannelID);
+			if (refGuildID != null) assert.equal(data.message_reference__guild_id, refGuildID);
+		});
+	}
+
+	// Reply: references a message in the same channel
+	await testMessageReference("1406771857369206825", 0n, 0n);
+	// Reply in thread: references a message in the same thread
+	await testMessageReference("1426669514359181445", 0n, 0n);
+	// Thread starter message: references a message in the parent channel
+	await testMessageReference("1412186599952875694", 1n, 0n);
+	// Pin announcement: references a message in the same channel and doesn't include the guild ID for some reason
+	await testMessageReference("1367567786964160653", 0n, null);
+	// Thread creation announcement: references the new thread
+	await testMessageReference("1407105149037576367", null, 0n);
+	// Forwarded message from the same channel: references a message in the same channel
+	await testMessageReference("1407105614689206466", 0n, 0n);
+	// Forwarded message from a different channel in the same server
+	await testMessageReference("1428017174668378284", null, 0n);
+	// Forwarded message from a different server
+	await testMessageReference("1428017938564255818", null, null);
+	// Poll result announcement: references the same channel and doesn't include the guild ID for some reason
+	await testMessageReference("1412043486085120161", 0n, null);
+	// Follow add announcement: references the followed channel (in this case, from the same server)
+	await testMessageReference("1426676117129138337", null, 0n);
+	// Crossposted message: references the original message (in this case, from the same server)
+	await testMessageReference("1426688355608956949", null, 0n);
 });
 
 await test("archiving members works", async () => {

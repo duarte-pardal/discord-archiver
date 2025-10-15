@@ -34,6 +34,7 @@ export const enum RequestType {
 	BeginTransaction,
 	CommitTransaction,
 	RollbackTransaction,
+	Execute,
 	Optimize,
 	Vacuum,
 	AddUserSnapshot,
@@ -86,6 +87,15 @@ export type CommandRequest = {
 		RequestType.RollbackTransaction |
 		RequestType.Optimize |
 		RequestType.Vacuum;
+};
+/**
+ * Executes an arbitrary SQLite statement.
+ *
+ * Should only be used in tests.
+ */
+export type ExecuteRequest = {
+	type: RequestType.Execute;
+	sql: string;
 };
 export type AddUserSnapshotRequest = {
 	type: RequestType.AddUserSnapshot;
@@ -334,6 +344,7 @@ export type SingleRequest =
 	GetLastSyncedMessageIDRequest |
 	SetLastSyncedMessageIDRequest;
 export type IteratorRequest =
+	ExecuteRequest |
 	GetGuildsRequest |
 	GetRolesRequest |
 	GetGuildMembersRequest |
@@ -412,6 +423,7 @@ export type RelationSnapshotResponse<Full, Partial> =
 	DeletedRelationSnapshotResponse<Partial>;
 
 export type IteratorResponseFor<R extends IteratorRequest> =
+	R extends ExecuteRequest ? any :
 	R extends GetFilesRequest ? File :
 	R extends GetGuildsRequest ? ObjectSnapshotResponse<DT.Guild> :
 	R extends GetRolesRequest ? ObjectSnapshotResponse<DT.Role> :

@@ -7,7 +7,7 @@
 import * as fs from "node:fs";
 import * as DT from "../discord-api/types.js";
 import { default as SQLite, Statement } from "better-sqlite3";
-import { SingleRequest, SingleResponseFor, Timing, RequestType, IteratorRequest, IteratorResponseFor, AddSnapshotResult, ObjectSnapshotResponse, GetReactionsHistoryRequest, AddReactionResult } from "./types.js";
+import { SingleRequest, SingleResponseFor, Timing, RequestType, IteratorRequest, IteratorResponseFor, AddSnapshotResult, ObjectSnapshotResponse, GetReactionsHistoryRequest, AddReactionResult, AddMessageSnapshotRequest } from "./types.js";
 import { encodeSnowflakeArray, encodeObject, ObjectType, encodeImageHash, decodeObject, encodePermissionOverwrites, decodePermissionOverwrites, decodeImageHash, encodeEmoji, encodeEmojiProps, decodeEmojiProps, setLogger, decodeSnowflakeArray } from "./generic-encoding.js";
 import { Logger } from "../util/log.js";
 import { snowflakeToTimestamp } from "../discord-api/snowflake.js";
@@ -428,15 +428,26 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _guild_id = :_guild_id AND _del
 	}
 
 
-	// BUG: This is broken with threads!
 	let cachedChannelID: string;
-	let cachedChannelParentID: string;
-	let cachedChannelGuildID: string;
+	let cachedChannelParentID: string | null;
+	let cachedChannelGuildID: string | null;
+	/**
+	 * Stores the channel's ID in `cachedChannelID`, its parent's ID (if it's a thread) in
+	 * `cachedChannelParentID` and its guild's ID in `cachedChannelGuildID`.
+	 */
 	function updateCachedChannel(channelID: string) {
-		const channel: any = objectStatements.channel.getLatestSnapshot.get({ id: channelID, $getAll: 0n });
+		if (channelID === cachedChannelID) return;
+		let channel: any = objectStatements.channel.getLatestSnapshot.get({ id: channelID, $getAll: 0n });
+		if (channel !== undefined) {
+			cachedChannelGuildID = channel.guild_id === null ? null : String(channel.guild_id);
+			cachedChannelParentID = null;
+		} else {
+			channel = objectStatements.thread.getLatestSnapshot.get({ id: channelID, $getAll: 0n });
+			cachedChannelParentID = String(channel.parent_id);
+			const parent: any = objectStatements.channel.getLatestSnapshot.get({ id: channel.parent_id, $getAll: 0n });
+			cachedChannelGuildID = parent.guild_id === null ? null : String(parent.guild_id);
+		}
 		cachedChannelID = String(channel.id);
-		cachedChannelParentID = channel.parent_id === null ? null : channel.parent_id;
-		cachedChannelGuildID = channel.guild_id === null ? null : channel.guild_id;
 	}
 
 	function decodeUser(snapshot: any): DT.PartialUser {
@@ -516,15 +527,21 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _guild_id = :_guild_id AND _del
 			if (snapshot.message_reference__channel_id === 0n) {
 				message.message_reference.channel_id = channelID;
 			} else if (snapshot.message_reference__channel_id === 1n) {
-				if (cachedChannelID !== channelID) updateCachedChannel(channelID);
+				updateCachedChannel(channelID);
+				if (cachedChannelParentID == null) {
+					throw new Error("Invalid message reference: not a thread");
+				}
 				message.message_reference.channel_id = cachedChannelParentID;
 			} else if (snapshot.message_reference__channel_id !== null) {
 				message.message_reference.channel_id = String(snapshot.message_reference__channel_id);
 			}
 
 			if (snapshot.message_reference__guild_id === 0n) {
-				if (cachedChannelID !== channelID) updateCachedChannel(channelID);
-				message.message_reference.guild_id = String(cachedChannelGuildID);
+				updateCachedChannel(channelID);
+				if (cachedChannelGuildID == null) {
+					throw new Error("Invalid message reference: not a guild channel");
+				}
+				message.message_reference.guild_id = cachedChannelGuildID;
 			} else if (snapshot.message_reference__guild_id !== null) {
 				message.message_reference.guild_id = String(snapshot.message_reference__guild_id);
 			}
@@ -583,6 +600,10 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _guild_id = :_guild_id AND _del
 			}
 			case RequestType.RollbackTransaction: {
 				statements.rollbackTransaction.run();
+				break;
+			}
+			case RequestType.Execute: {
+				response = db.prepare(req.sql).iterate();
 				break;
 			}
 			case RequestType.Optimize: {
@@ -831,6 +852,15 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _guild_id = :_guild_id AND _del
 					(req.message.interaction_metadata.target_user as any) = { id: req.message.interaction_metadata.target_user.id };
 				}
 
+				if (req.message.referenced_message != null) {
+					requestHandler({
+						type: RequestType.AddMessageSnapshot,
+						timing: req.timing,
+						timestamp: req.timestamp,
+						message: req.message.referenced_message,
+					} satisfies AddMessageSnapshotRequest);
+				}
+
 				const msg = encodeObject(ObjectType.Message, req.message);
 
 				msg._attachment_ids = encodeSnowflakeArray((req.message.attachments).map(a => a.id));
@@ -871,8 +901,8 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _guild_id = :_guild_id AND _del
 					msg.message_reference__guild_id = null;
 				} else {
 					if (
-						msg.message_reference__channel_id != null ||
-						msg.message_reference__guild_id != null
+						req.message.message_reference.channel_id != null ||
+						req.message.message_reference.guild_id != null
 					) {
 						updateCachedChannel(req.message.channel_id);
 					}
