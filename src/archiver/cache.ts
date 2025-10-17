@@ -1,12 +1,10 @@
 import * as DT from "../discord-api/types.js";
-import { Account, OngoingExpressionUploaderRequest, OngoingMemberListSync as OngoingMemberSync, OngoingMessageSync, OngoingThreadSync } from "./accounts.js";
+import { Account, OngoingExpressionUploaderRequest, OngoingMemberSync as OngoingMemberSync, OngoingMessageSync, OngoingThreadSync } from "./accounts.js";
 import { ChannelOptions, getChannelOptions, getThreadOptions, GuildOptions, ParsedConfig } from "./config.js";
 
 export type MessageSyncFields = {
 	/** ID of the latest message as of the start of the latest gateway session, or `null` if unknown. Used for determining whether to sync the channel and for estimating the remaining sync time. It is assumed that any message with a greater ID would be handled by the MESSAGE_CREATE dispatch handler, and, as such, it's not necessary to sync messages with a greater ID. */
 	lastMessageID: bigint | null;
-	/** Approximate message count */
-	messageCount?: number | null;
 
 	/** Whether all messages in the channel are currently synced. */
 	areMessagesSynced: boolean;
@@ -197,7 +195,6 @@ export function cacheThread(cachedThread: CachedThread | undefined, thread: DT.T
 		private: thread.type === DT.ChannelType.PrivateThread,
 		active: true, // will be replaced below
 		lastMessageID: null, // will be replaced below
-		messageCount: null, // will be replaced below
 		areMessagesSynced: false,
 		lastSyncedMessageID: undefined,
 		pendingMessageSyncUpdate: false,
@@ -208,11 +205,6 @@ export function cacheThread(cachedThread: CachedThread | undefined, thread: DT.T
 	cachedThread.active = !thread.thread_metadata.archived;
 	if (isNew || updateLastMessage) {
 		cachedThread.lastMessageID = thread.last_message_id == null ? null : BigInt(thread.last_message_id);
-		cachedThread.messageCount = (
-			BigInt(thread.id) < 992580363878400000n && (thread.message_count === undefined || thread.message_count >= 50) ?
-				thread.total_message_sent :
-				thread.message_count
-		) ?? null;
 	}
 
 	if (isNew) {

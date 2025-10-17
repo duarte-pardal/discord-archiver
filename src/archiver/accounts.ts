@@ -1,6 +1,7 @@
 import { GatewayConnection, GatewayTypes } from "../discord-api/gateway/connection.js";
 import { CachedGuild, CachedTextLikeChannel, CachedThread } from "./cache.js";
 import { RequestResult } from "../discord-api/rest.js";
+import { DispatchEventName } from "../discord-api/types.js";
 
 export type OngoingOperationBase = {
 	abortController?: AbortController;
@@ -8,29 +9,40 @@ export type OngoingOperationBase = {
 	account: Account;
 };
 export type OngoingMessageSync = OngoingOperationBase & {
+	type: "message-sync";
 	abortController: AbortController;
 	channel: CachedTextLikeChannel | CachedThread;
+	/** ID of the earliest message found by this instance of the archiver, used for estimating the remaining sync time. */
+	firstMessageID: bigint | undefined;
+	archivedMessageCount: number;
+	totalMessageCount: number | null;
+	progress: number | null;
 };
 export type OngoingThreadSync = OngoingOperationBase & {
+	type: "thread-sync";
 	abortController: AbortController;
 	channel: CachedTextLikeChannel | CachedThread;
 };
 export type OngoingExpressionUploaderRequest = OngoingOperationBase & {
+	type: "expression-uploader-request";
 	abortController: AbortController;
 	guild: CachedGuild;
 };
-export type OngoingMemberListSync = OngoingOperationBase & {
+export type OngoingMemberSync = OngoingOperationBase & {
+	type: "member-sync";
 	guild: CachedGuild;
 	memberIDs: Set<bigint>;
 };
 export type OngoingDispatchHandling = OngoingOperationBase & {
+	type: "dispatch-handling";
+	eventName: DispatchEventName;
 	abortController: AbortController;
 };
 export type OngoingOperation =
 	OngoingMessageSync |
 	OngoingThreadSync |
 	OngoingExpressionUploaderRequest |
-	OngoingMemberListSync |
+	OngoingMemberSync |
 	OngoingDispatchHandling;
 
 export type AccountOptions = {
@@ -56,7 +68,7 @@ export type Account = AccountOptions & {
 	numberOfOngoingGatewayOperations: number;
 
 	ongoingOperations: Set<OngoingOperation>;
-	ongoingMemberSyncs: Set<OngoingMemberListSync>;
+	ongoingMemberSyncs: Set<OngoingMemberSync>;
 };
 
 export const accounts = new Set<Account>();

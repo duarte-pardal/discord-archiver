@@ -17,8 +17,8 @@ import log from "../util/log.js";
 import { getTag } from "../discord-api/tag.js";
 import { RateLimiter } from "../util/rate-limiter.js";
 import { CachedTextLikeChannel, CachedGuild, guilds, isGuildTextLikeChannel, CachedThread, CachedChannel, directChannels, cacheThread, cacheChannel, CachedPermissionOverwrites, updateGuildProperties } from "./cache.js";
-import { Account, AccountOptions, accounts, getLeastGatewayOccupiedAccount, getLeastRESTOccupiedAccount, OngoingDispatchHandling, OngoingExpressionUploaderRequest } from "./accounts.js";
-import { ArchivedThreadSyncProgress, downloadProgresses, MessageSyncProgress, progressCounts, startProgressDisplay, stopProgressDisplay, updateProgressOutput } from "./progress.js";
+import { Account, AccountOptions, accounts, getLeastGatewayOccupiedAccount, getLeastRESTOccupiedAccount, OngoingDispatchHandling, OngoingExpressionUploaderRequest, OngoingMessageSync, OngoingThreadSync } from "./accounts.js";
+import { startProgressDisplay, stopProgressDisplay, updateProgressOutput } from "./progress.js";
 import { DownloadArguments, getCDNEmojiURL, getCDNHashURL, getDownloadTransactionFunction, normalizeURL } from "./files.js";
 import { mergeOptions } from "../util/http.js";
 import { setMaxListeners } from "node:events";
@@ -312,40 +312,50 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 
 	// SYNCING
 
+	// TODO: Performance can be improved by not waiting for downloads from the previous chunk to
+	// finish before starting the chunk downloads.
 	async function syncMessages(account: Account, channel: CachedTextLikeChannel | CachedThread): Promise<void> {
 		const abortController = new AbortController();
 		const restOptions = mergeOptions(account.restOptions, { signal: abortController.signal });
 
 		// Add this operation to the ongoing syncs list
 		const { promise: end, resolve: endOperation } = Promise.withResolvers<void>();
-		const sync = { abortController, end, account, channel };
+		const sync: OngoingMessageSync = {
+			type: "message-sync",
+			abortController,
+			end,
+			account,
+			channel,
+			firstMessageID: undefined,
+			archivedMessageCount: 0,
+			totalMessageCount: null,
+			progress: null,
+		};
 		if (channel.messageSync !== null) {
 			throw new Error("There can't be two message syncs for the same channel running simultaneously.");
 		}
 		channel.messageSync = sync;
 		account.ongoingOperations.add(sync);
 		account.numberOfOngoingRESTOperations++;
-
-		let progress: MessageSyncProgress | undefined;
+		updateProgressOutput();
 
 		try {
-			progressCounts.messageSyncs++;
-			progress = {
-				channel,
-				progress: 0,
-			};
-			downloadProgresses.add(progress);
-			updateProgressOutput();
-
-			const lastMessageIDNum = channel.lastMessageID != null ? Number(channel.lastMessageID) : null;
-			let firstMessageIDNum: number | undefined;
-
 			let messageID = channel.lastSyncedMessageID?.toString() ?? "0";
 			log.verbose?.(`${messageID === "0" ? "Started" : "Resumed"} syncing messages from #${channel.name} (${channel.id})${messageID === "0" ? "" : ` after message ${messageID}`} using ${account.name}.`);
+			let seenMessageCount = 0;
 
 			function updateProgress(count: number) {
-				progress!.progress = lastMessageIDNum === null ? null : (Number.parseInt(messageID) - firstMessageIDNum!) / (lastMessageIDNum - firstMessageIDNum!);
-				progressCounts.messagesArchived += count;
+				const firstMessageIDNum = Number(sync.firstMessageID! satisfies bigint);
+				const lastSeenMessageIDNum = Number(messageID);
+				const lastMessageIDNum = channel.lastMessageID === null ? null : Number(channel.lastMessageID satisfies bigint);
+				sync.archivedMessageCount += count;
+				sync.totalMessageCount =
+					lastMessageIDNum === null ? null :
+					(seenMessageCount / (lastSeenMessageIDNum - firstMessageIDNum)) * (lastMessageIDNum - firstMessageIDNum);
+				sync.progress =
+					lastMessageIDNum === null ? null :
+					lastSeenMessageIDNum === 0 ? 0 :
+					(lastSeenMessageIDNum - firstMessageIDNum) / (lastMessageIDNum - firstMessageIDNum);
 				updateProgressOutput();
 			}
 
@@ -372,8 +382,10 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 				const simpleMessages: DT.Message[] = [];
 
 				if (messages.length > 0) {
-					firstMessageIDNum ??= Number.parseInt(messages.at(-1)!.id);
+					sync.firstMessageID ??= BigInt(messages.at(-1)!.id);
 					messageID = messages[0].id;
+					seenMessageCount += messages.length;
+					updateProgress(0);
 
 					for (let i = messages.length - 1; i >= 0; i--) {
 						const message = messages[i];
@@ -429,7 +441,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 						}
 					}
 
-					channel.lastSyncedMessageID =
+					const lastSyncedMessageID =
 						messages.length >= 100 ?
 							// We have not reached the end.
 							lastStoredMessageID :
@@ -440,12 +452,15 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 							channel.lastMessageID != null && channel.lastMessageID > lastStoredMessageID ?
 								channel.lastMessageID :
 								lastStoredMessageID;
-					await db.request({
-						type: RequestType.SetLastSyncedMessageID,
-						channelID: channel.id,
-						isThread: channel.parent !== null,
-						lastSyncedMessageID: channel.lastSyncedMessageID,
-					} satisfies SetLastSyncedMessageIDRequest);
+					channel.lastSyncedMessageID = lastSyncedMessageID;
+					await db.transaction(async () => {
+						db.request({
+							type: RequestType.SetLastSyncedMessageID,
+							channelID: channel.id,
+							isThread: channel.parent !== null,
+							lastSyncedMessageID,
+						} satisfies SetLastSyncedMessageIDRequest);
+					});
 				})();
 				previousIterationPromise.catch(() => {});
 
@@ -457,8 +472,6 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 					if (channel.parent !== null) {
 						deleteThreadIfUseless(channel);
 					}
-					progress.progress = 1;
-					updateProgressOutput();
 					break;
 				}
 
@@ -472,17 +485,12 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 				throw err;
 			}
 		} finally {
-			if (progress !== undefined) {
-				progressCounts.messageSyncs--;
-				downloadProgresses.delete(progress);
-			}
-			updateProgressOutput();
-
 			// Remove this operation from the ongoing syncs list
 			channel.messageSync = null;
 			account.ongoingOperations.delete(sync);
 			account.numberOfOngoingRESTOperations--;
 			endOperation();
+			updateProgressOutput();
 		}
 	}
 
@@ -496,7 +504,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 		const restOptions = mergeOptions(account.restOptions, { signal: abortController.signal });
 
 		const { promise: end, resolve: endOperation } = Promise.withResolvers<void>();
-		const sync = { abortController, end, account, channel };
+		const sync: OngoingThreadSync = { type: "thread-sync", abortController, end, account, channel };
 		if (channel.publicThreadSync !== null) {
 			throw new Error(`There can't be two ${ArchivedThreadListType[type]} archived thread syncs for the same channel running simultaneously.`);
 		}
@@ -505,12 +513,6 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 
 		account.numberOfOngoingRESTOperations++;
 
-		progressCounts.threadEnumerations++;
-		const progress: ArchivedThreadSyncProgress = {
-			channel,
-			progress: null,
-		};
-		downloadProgresses.add(progress);
 		updateProgressOutput();
 
 		try {
@@ -583,8 +585,6 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 			account.numberOfOngoingRESTOperations--;
 			endOperation();
 
-			progressCounts.threadEnumerations--;
-			downloadProgresses.delete(progress);
 			updateProgressOutput();
 		}
 	}
@@ -595,6 +595,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 
 		const { promise: end, resolve: endOperation } = Promise.withResolvers<void>();
 		const operation: OngoingExpressionUploaderRequest = {
+			type: "expression-uploader-request",
 			abortController,
 			end,
 			account,
@@ -602,6 +603,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 		};
 		account.ongoingOperations.add(operation);
 		account.numberOfOngoingRESTOperations++;
+		updateProgressOutput();
 
 		try {
 			log.verbose?.(`Requesting the uploaders of emojis from guild ${cachedGuild.name} (${cachedGuild.id}) using ${account.name}.`);
@@ -654,6 +656,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 			account.ongoingOperations.delete(operation);
 			account.numberOfOngoingRESTOperations--;
 			endOperation();
+			updateProgressOutput();
 		}
 	}
 
@@ -905,12 +908,15 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 		log.verbose?.(`Started syncing guild members from ${guild.name} (${guild.id}) using ${account.name}.`);
 
 		guild.memberSync = {
+			type: "member-sync",
 			account,
 			guild,
 			memberIDs: new Set(),
 		};
-
+		account.ongoingMemberSyncs.add(guild.memberSync);
 		account.numberOfOngoingGatewayOperations++;
+		updateProgressOutput();
+
 		account.gatewayConnection.sendPayload({
 			op: DT.GatewayOpcode.RequestGuildMembers,
 			d: {
@@ -1024,11 +1030,14 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 				const abortController = new AbortController();
 				const { promise: end, resolve: endOperation } = Promise.withResolvers<void>();
 				const operation: OngoingDispatchHandling = {
+					type: "dispatch-handling",
+					eventName: payload.t,
 					abortController,
 					end,
 					account,
 				};
 				account.ongoingOperations.add(operation);
+				updateProgressOutput();
 
 				try {
 					switch (payload.t) {
@@ -1047,6 +1056,11 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 									updateGuildPermissions(cachedGuild);
 								}
 							}
+							break;
+						}
+
+						case "RESUMED": {
+							log.verbose?.(`Gateway session resumed for ${account.name} (${account.details!.tag}).`);
 							break;
 						}
 
@@ -1355,6 +1369,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 								cachedGuild.memberSync = null;
 								account.ongoingMemberSyncs.delete(sync);
 								account.numberOfOngoingGatewayOperations--;
+								updateProgressOutput();
 
 								db.transaction(async () => {
 									db.request({
@@ -1641,10 +1656,10 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 									cachedChannel.areMessagesSynced &&
 									cachedChannel.lastSyncedMessageID !== undefined
 								) {
-									const lastSyncedMessageID = BigInt(message.id);
+									const messageID = BigInt(message.id);
 									// Only update if the ID increased to prevent message syncing and MESSAGE_CREATE handling from interfering.
-									if (lastSyncedMessageID > cachedChannel.lastSyncedMessageID) {
-										cachedChannel.lastSyncedMessageID = lastSyncedMessageID;
+									if (messageID > cachedChannel.lastSyncedMessageID) {
+										cachedChannel.lastSyncedMessageID = messageID;
 									}
 									await db.request({
 										type: RequestType.SetLastSyncedMessageID,
@@ -1786,6 +1801,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 				} finally {
 					account.ongoingOperations.delete(operation);
 					endOperation();
+					updateProgressOutput();
 				}
 			});
 
@@ -1799,6 +1815,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 					guild.memberSync = null;
 				}
 				account.ongoingMemberSyncs.clear();
+				updateProgressOutput();
 			});
 
 			if (log.debug) {
