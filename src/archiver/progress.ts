@@ -1,14 +1,38 @@
+import { FileStore } from "../db/file-store.js";
 import { snowflakeToTimestamp } from "../discord-api/snowflake.js";
 import { setProgress } from "../util/progress-display.js";
 import { accounts, OngoingDispatchHandling, OngoingMessageSync } from "./accounts.js";
 
 let active = false;
-export function startProgressDisplay(): void {
+let fileStore: FileStore | undefined;
+
+let nextUpdateTimestamp: number | null = null;
+let updateTimer: NodeJS.Timeout | null = null;
+
+export function startProgressDisplay(store: FileStore | undefined): void {
 	active = true;
+	fileStore = store;
 }
 export function stopProgressDisplay(): void {
 	active = false;
 	setProgress();
+	if (updateTimer !== null) {
+		clearTimeout(updateTimer);
+	}
+}
+
+let filesDownloaded = 0;
+let bytesDownloaded = 0;
+export function onFileDownload(bytes: number): void {
+	filesDownloaded++;
+	bytesDownloaded += bytes;
+	updateProgressOutput();
+}
+
+let messagesArchived = 0;
+export function onArchiveMessages(count: number): void {
+	messagesArchived += count;
+	updateProgressOutput();
 }
 
 function pad2(n: number): string {
@@ -20,6 +44,18 @@ function dateToLocalTimestamp(date: Date): string {
 
 export function updateProgressOutput(): void {
 	if (!active) return;
+
+	// Debounce updates
+	const now = Date.now();
+	if (updateTimer !== null) return;
+	if (nextUpdateTimestamp !== null && now - nextUpdateTimestamp < 0) {
+		updateTimer = setTimeout(() => {
+			updateTimer = null;
+			updateProgressOutput();
+		}, nextUpdateTimestamp - now);
+		return;
+	}
+	nextUpdateTimestamp = now + 50;
 
 	const messageSyncs: OngoingMessageSync[] = [];
 	const dispatchHandlings: OngoingDispatchHandling[] = [];
@@ -62,6 +98,7 @@ ${sync.channel.lastSyncedMessageID === undefined || sync.channel.lastSyncedMessa
 		}),
 		dispatchHandlings.map(op => `Handling ${op.eventName} dispatch from ${op.account.name}.`),
 		hiddenSyncCount === 0 ? [] : [`+${hiddenSyncCount} other operations`],
+		fileStore === undefined ? [] : [`Archived ${messagesArchived} messages. Downloaded ${filesDownloaded} files (${bytesDownloaded >> 20} MiB).`],
 	).join("\n");
 
 	setProgress("\n" + (output !== "" ? output : "Nothing left to sync."));

@@ -78,7 +78,11 @@ export function preventUnsettled<T>(signal: AbortSignal, message: string, promis
 				console.debug(`Unsettled promise: ${message}`);
 			}, 500);
 		};
-		signal.addEventListener("abort", abortHandler, { once: true });
+		if (signal.aborted) {
+			abortHandler();
+		} else {
+			signal.addEventListener("abort", abortHandler, { once: true });
+		}
 		promise
 			.finally(() => {
 				signal.removeEventListener("abort", abortHandler);

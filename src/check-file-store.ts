@@ -3,6 +3,9 @@
 import { parseArgs, ParseArgsConfig } from "node:util";
 import { getDatabaseConnection } from "./db/index.js";
 import { FileStore } from "./db/file-store.js";
+import log from "./util/log.js";
+
+log.setLevel("verbose");
 
 const args = {
 	strict: true,
@@ -33,7 +36,7 @@ Usage: node check-file-store.js [-d | --delete-extra-files] [--file-store-path <
 
 	const db = await getDatabaseConnection(positionals[0], options["sync-sqlite"] ?? false);
 
-	const fileStore = new FileStore(fileStorePath, db);
+	const fileStore = new FileStore(fileStorePath, db, log);
 	await fileStore.open(true);
 
 	const result = await fileStore.checkConsistency(options["delete-extra-files"]);

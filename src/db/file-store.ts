@@ -36,7 +36,10 @@ export type PendingFile = {
 	 * Idempotent. Should be called inside of a DB transaction.
 	 */
 	writeToDB(): void;
-	/** Should be called when the DB transaction finishes. Commits the file transaction. */
+	/**
+	 * Idempotent. Should be called after the DB transaction finishes. Commits the file storage
+	 * transaction.
+	 */
 	settle(): Promise<void>;
 };
 export type OngoingFileAcquisition = {
@@ -155,6 +158,7 @@ export class FileStore {
 	async close(): Promise<void> {
 		const ongoingAcquisitions = [...this.#ongoingAcquisitions.values()];
 		if (ongoingAcquisitions.some(a => a.abortPromise === undefined)) {
+			this.log?.debug?.("ongoingAcquisitions: %o\npendingFileNames: %o", this.#ongoingAcquisitions, this.#pendingFileNames);
 			throw new Error("Can't close the file store while there are ongoing file acquisitions, except for those that are aborting.");
 		}
 		await Promise.allSettled(ongoingAcquisitions.map(a => a.abortPromise));
@@ -165,7 +169,9 @@ export class FileStore {
 		try {
 			await fs.promises.rmdir(`${this.#basePath}/pending`);
 		} catch (err) {
-			this.log?.warning?.(`Couldn't remove the file store's pending directory (${(err as NodeJS.ErrnoException).message}). There's no loss of data. Check the directory for extra files not created by this program.`);
+			if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+				this.log?.warning?.(`Couldn't remove the file store's pending directory (${(err as NodeJS.ErrnoException).message}). There's no loss of data. Check the directory for extra files not created by this program.`);
+			}
 		}
 	}
 
@@ -180,9 +186,13 @@ export class FileStore {
 				}
 				return hashesInDB;
 			})(),
-			(async () =>
-				new Set(await fs.promises.readdir(this.#basePath))
-			)(),
+			(async () => {
+				const filesInFileStore = new Set<string>();
+				for await (const file of await fs.promises.opendir(this.#basePath)) {
+					filesInFileStore.add(file.name);
+				}
+				return filesInFileStore;
+			})(),
 		]);
 
 		const missingFiles = hashesInDB.difference(filesInFileStore);
@@ -280,6 +290,7 @@ export class FileStore {
 					childController.abort();
 
 					try {
+						// `fileInfo` might be modified during the `await`.
 						await ongoingAcquisition!.promise;
 					} catch {}
 				}
@@ -381,7 +392,7 @@ export class FileStore {
 
 			ongoingAcquisition = {
 				abort,
-				promise: promise,
+				promise,
 				refCount: 1,
 				abortPromise: undefined,
 			};
@@ -401,7 +412,7 @@ export class FileStore {
 			abortAll();
 		}
 		abortSignal.addEventListener("abort", abortAll, { once: true });
-		let files;
+		let files: PendingFile[];
 		try {
 			files = await Promise.all(operations.map(o => o.promise));
 		} finally {

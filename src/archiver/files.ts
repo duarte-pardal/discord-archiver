@@ -11,6 +11,7 @@ import { FileStore, OngoingFileAcquisition, PendingFileResult } from "../db/file
 import { AnimatedImageOptions, ImageOptions } from "./config.js";
 import { DatabaseConnection } from "../db/index.js";
 import { PartialCustomEmoji } from "../discord-api/types.js";
+import { onFileDownload } from "./progress.js";
 
 const ACCEPT_BYTE_RANGES_REGEX = /(?:,|^)\s*bytes\s*(?:,|$)/;
 // TODO: Switch to BLAKE2b 256 (implemented in Bun but not in Node.js)
@@ -68,7 +69,7 @@ export async function downloadFile(
 					}
 				} else if (!response.ok) {
 					// Impossible to download file
-					log.debug?.(`Got HTTP ${response.status} ${response.statusText} while requesting the file at <${downloadURL}>.`);
+					log.error?.(`Got HTTP ${response.status} ${response.statusText} while requesting the file at <${downloadURL}>. This file will not be downloaded.`);
 					errorCode = response.status < 0 ? 0 : response.status;
 					if (response.body != null) {
 						for await (const _chunk of preventUnsettledIterable(abortSignal, "download/body", response.body)) {
@@ -97,7 +98,7 @@ export async function downloadFile(
 
 					} else if (!(rangeRequestsSupported && response.status === 206 && contentRange === `bytes ${downloadedBytes}-${totalBytes-1}/${totalBytes}`)) {
 						// Not a valid full content response nor an expected and valid partial content response
-						log.warning?.(`Got unexpected combination HTTP ${response.status} ${response.statusText} and Content-Range: ${contentRange} while requesting the file at <${downloadURL}>. This file will not be archived.`);
+						log.error?.(`Got unexpected combination HTTP ${response.status} ${response.statusText} and Content-Range: ${contentRange} while requesting the file at <${downloadURL}>. This file will not be downloaded.`);
 						errorCode = -1;
 						if (response.body != null) {
 							for await (const _chunk of preventUnsettledIterable(abortSignal, "download/body", response.body)) {
@@ -184,6 +185,7 @@ export async function downloadFile(
 			// No equal file exists
 
 			log.debug?.(`The file at <${downloadURL}> (${pendingPath}) with hash ${hash.toString("base64url")} is unique and will be stored.`);
+			onFileDownload(downloadedBytes);
 			return {
 				errorCode: null,
 				hash,

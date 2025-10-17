@@ -18,7 +18,7 @@ import { getTag } from "../discord-api/tag.js";
 import { RateLimiter } from "../util/rate-limiter.js";
 import { CachedTextLikeChannel, CachedGuild, guilds, isGuildTextLikeChannel, CachedThread, CachedChannel, directChannels, cacheThread, cacheChannel, CachedPermissionOverwrites, updateGuildProperties } from "./cache.js";
 import { Account, AccountOptions, accounts, getLeastGatewayOccupiedAccount, getLeastRESTOccupiedAccount, OngoingDispatchHandling, OngoingExpressionUploaderRequest, OngoingMessageSync, OngoingThreadSync } from "./accounts.js";
-import { startProgressDisplay, stopProgressDisplay, updateProgressOutput } from "./progress.js";
+import { onArchiveMessages, startProgressDisplay, stopProgressDisplay, updateProgressOutput } from "./progress.js";
 import { DownloadArguments, getCDNEmojiURL, getCDNHashURL, getDownloadTransactionFunction, normalizeURL } from "./files.js";
 import { mergeOptions } from "../util/http.js";
 import { setMaxListeners } from "node:events";
@@ -119,10 +119,6 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 	}
 	log.debug?.("Parsed config: %o", config);
 
-	if (stats) {
-		startProgressDisplay();
-	}
-
 	const globalAbortController = new AbortController();
 	const globalAbortSignal = globalAbortController.signal;
 
@@ -142,6 +138,9 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 
 	let allReady = false;
 
+	if (stats) {
+		startProgressDisplay(fileStore);
+	}
 
 	// ARCHIVING
 
@@ -356,7 +355,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 					lastMessageIDNum === null ? null :
 					lastSeenMessageIDNum === 0 ? 0 :
 					(lastSeenMessageIDNum - firstMessageIDNum) / (lastMessageIDNum - firstMessageIDNum);
-				updateProgressOutput();
+				onArchiveMessages(count);
 			}
 
 			let previousIterationPromise: Promise<void> | undefined;
