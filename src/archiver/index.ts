@@ -325,7 +325,6 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 			end,
 			account,
 			channel,
-			firstMessageID: undefined,
 			archivedMessageCount: 0,
 			totalMessageCount: null,
 			progress: null,
@@ -341,20 +340,21 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 		try {
 			let messageID = channel.lastSyncedMessageID?.toString() ?? "0";
 			log.verbose?.(`${messageID === "0" ? "Started" : "Resumed"} syncing messages from #${channel.name} (${channel.id})${messageID === "0" ? "" : ` after message ${messageID}`} using ${account.name}.`);
-			let seenMessageCount = 0;
 
+			let seenMessageCount = 0;
+			let firstMessageIDNum: number | undefined;
 			function updateProgress(count: number) {
-				const firstMessageIDNum = Number(sync.firstMessageID! satisfies bigint);
 				const lastSeenMessageIDNum = Number(messageID);
+				const lastSyncedMessageIDNum = Number(channel.lastSyncedMessageID);
 				const lastMessageIDNum = channel.lastMessageID === null ? null : Number(channel.lastMessageID satisfies bigint);
 				sync.archivedMessageCount += count;
 				sync.totalMessageCount =
 					lastMessageIDNum === null ? null :
-					(seenMessageCount / (lastSeenMessageIDNum - firstMessageIDNum)) * (lastMessageIDNum - firstMessageIDNum);
+					(seenMessageCount / (lastSeenMessageIDNum - firstMessageIDNum!)) * (lastMessageIDNum - firstMessageIDNum!);
 				sync.progress =
 					lastMessageIDNum === null ? null :
-					lastSeenMessageIDNum === 0 ? 0 :
-					(lastSeenMessageIDNum - firstMessageIDNum) / (lastMessageIDNum - firstMessageIDNum);
+					lastSyncedMessageIDNum === 0 ? 0 :
+					(lastSyncedMessageIDNum - firstMessageIDNum!) / (lastMessageIDNum - firstMessageIDNum!);
 				onArchiveMessages(count);
 			}
 
@@ -381,7 +381,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 				const simpleMessages: DT.Message[] = [];
 
 				if (messages.length > 0) {
-					sync.firstMessageID ??= BigInt(messages.at(-1)!.id);
+					firstMessageIDNum ??= Number.parseInt(messages.at(-1)!.id);
 					messageID = messages[0].id;
 					seenMessageCount += messages.length;
 					updateProgress(0);

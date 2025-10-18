@@ -23,9 +23,16 @@ export function stopProgressDisplay(): void {
 
 let filesDownloaded = 0;
 let bytesDownloaded = 0;
-export function onFileDownload(bytes: number): void {
-	filesDownloaded++;
-	bytesDownloaded += bytes;
+let duplicateFilesDownloaded = 0;
+let duplicateBytesDownloaded = 0;
+export function onFileDownload(bytes: number, duplicate: boolean): void {
+	if (duplicate) {
+		duplicateFilesDownloaded++;
+		duplicateBytesDownloaded += bytes;
+	} else {
+		filesDownloaded++;
+		bytesDownloaded += bytes;
+	}
 	updateProgressOutput();
 }
 
@@ -78,8 +85,11 @@ export function updateProgressOutput(): void {
 	const hiddenSyncCount = otherSyncCount + (messageSyncs.length - Math.min(messageSyncs.length, 10));
 
 	const topMessageSyncs = messageSyncs
-		.filter(s => s.progress != null)
-		.sort((a, b) => a.progress! - b.progress!)
+		.sort((a, b) =>
+			a.progress === null ? -1 :
+			b.progress === null ? 1 :
+			a.progress - b.progress,
+		)
 		.slice(0, 10);
 	let maxChannelNameLength = 0;
 	for (const sync of topMessageSyncs) {
@@ -89,17 +99,29 @@ export function updateProgressOutput(): void {
 	}
 
 	const output = (new Array<string>()).concat(
-		topMessageSyncs.map((sync) => {
-			return `\
-#${sync.channel.name.padEnd(maxChannelNameLength, ".")} \
-${sync.progress === null ? "" : ((sync.progress * 100).toFixed(2) + "%")}\
-${sync.totalMessageCount === null ? "" : ` = ${sync.archivedMessageCount.toFixed(0).padStart(7, " ")} / ${("~" + sync.totalMessageCount.toFixed(0)).padStart(8, " ")}`}\
-${sync.channel.lastSyncedMessageID === undefined || sync.channel.lastSyncedMessageID === 0n ? "" : "  " + dateToLocalTimestamp(new Date(Number(snowflakeToTimestamp(sync.channel.lastSyncedMessageID))))}`;
-		}),
+		topMessageSyncs.map((sync) => (
+			("#" + (sync.channel.name + " ").slice(0, maxChannelNameLength).padEnd(maxChannelNameLength, ".")) +
+			"  " +
+			(sync.progress === null ?
+				"   [unknown progress]   " :
+				(
+					Math.floor((sync.progress * 10000) / 100).toFixed(2).padStart(5, " ") + "%" +
+					sync.archivedMessageCount.toFixed(0).padStart(7, " ") + " / " + ("~" + sync.totalMessageCount!.toFixed(0)).padStart(8, " ")
+				)
+			) +
+			(
+				sync.channel.lastSyncedMessageID === undefined || sync.channel.lastSyncedMessageID === 0n ?
+					"" :
+					"  " + dateToLocalTimestamp(new Date(Number(snowflakeToTimestamp(sync.channel.lastSyncedMessageID))))
+			)
+		)),
 		dispatchHandlings.map(op => `Handling ${op.eventName} dispatch from ${op.account.name}.`),
 		hiddenSyncCount === 0 ? [] : [`+${hiddenSyncCount} other operations`],
-		fileStore === undefined ? [] : [`Archived ${messagesArchived} messages. Downloaded ${filesDownloaded} files (${bytesDownloaded >> 20} MiB).`],
 	).join("\n");
 
-	setProgress("\n" + (output !== "" ? output : "Nothing left to sync."));
+	setProgress(`\n\
+${output !== "" ? output : "Nothing left to sync."}
+Archived ${messagesArchived} messages.\
+${fileStore === undefined ? "" : `\nDownloaded ${filesDownloaded} files (${bytesDownloaded >> 20} MiB). Ignored ${duplicateFilesDownloaded} duplicates (${duplicateBytesDownloaded >> 20} MiB).`}`,
+	);
 }

@@ -171,6 +171,7 @@ export async function downloadFile(
 			await fs.promises.stat(hashPath);
 			// An equal file exists
 			log.debug?.(`There's a stored file equal to the file at <${downloadURL}> with hash ${hash.toString("base64url")}.`);
+			onFileDownload(downloadedBytes, true);
 			await fs.promises.unlink(pendingPath);
 			return {
 				errorCode: null,
@@ -184,7 +185,7 @@ export async function downloadFile(
 			// No equal file exists
 
 			log.debug?.(`The file at <${downloadURL}> (${pendingPath}) with hash ${hash.toString("base64url")} is unique and will be stored.`);
-			onFileDownload(downloadedBytes);
+			onFileDownload(downloadedBytes, false);
 			return {
 				errorCode: null,
 				hash,

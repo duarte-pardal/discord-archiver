@@ -12,10 +12,17 @@ export type OngoingMessageSync = OngoingOperationBase & {
 	type: "message-sync";
 	abortController: AbortController;
 	channel: CachedTextLikeChannel | CachedThread;
-	/** ID of the earliest message found by this instance of the archiver, used for estimating the remaining sync time. */
-	firstMessageID: bigint | undefined;
+	/** The number of messages archived by this sync operation. */
 	archivedMessageCount: number;
+	/**
+	 * The estimated number of messages from the message this operation started syncing from until
+	 * the last message in the channel.
+	 */
 	totalMessageCount: number | null;
+	/**
+	 * The estimated progress of the operation as a fraction where `0` corresponds to the start of
+	 * the operation and `1` corresponds to having archived all messages in the channel.
+	 */
 	progress: number | null;
 };
 export type OngoingThreadSync = OngoingOperationBase & {
