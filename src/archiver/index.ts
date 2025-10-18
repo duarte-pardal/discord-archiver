@@ -727,13 +727,12 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 
 		if (!channel.areMessagesSynced && channel.messageSync === null && accountsWithReadPermission.length > 0) {
 			syncMessages(getLeastRESTOccupiedAccount(accountsWithReadPermission)!, channel);
-			channel.pendingMessageSyncUpdate = false;
 		} else if (channel.messageSync !== null && !accountsWithReadPermission.includes(channel.messageSync.account)) {
 			channel.messageSync.abortController.abort();
 			await channel.messageSync.end;
-			channel.pendingMessageSyncUpdate = false;
 			updateMessageSync(channel);
 		}
+		channel.pendingMessageSyncUpdate = false;
 	}
 
 	async function updatePublicThreadSync(channel: CachedTextLikeChannel, invalidateSync = false) {
@@ -1863,6 +1862,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 
 				account.gatewayConnection.destroy();
 
+				// Member syncs don't need to be aborted.
 				const endPromises = [];
 				for (const { abortController, end } of account.ongoingOperations) {
 					endPromises.push(end);
