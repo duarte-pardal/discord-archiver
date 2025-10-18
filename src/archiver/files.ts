@@ -58,8 +58,7 @@ export async function downloadFile(
 
 				if (
 					response.status === 429 /* Too Many Requests */ ||
-					response.status === 500 /* Internal Server Error */ ||
-					response.status === 503 /* Service Unavailable */
+					(response.status >= 500 && response.status < 600)
 				) {
 					log.warning?.(`Got HTTP ${response.status} ${response.statusText} response while requesting the file at <${downloadURL}>. Retrying.`);
 					if (response.body != null) {
