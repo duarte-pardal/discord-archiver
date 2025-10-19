@@ -19,13 +19,17 @@ importers:
         version: 2.2.3
       ws:
         specifier: ^8.12.1
-        version: 8.18.0
+        version: 8.18.0(bufferutil@4.0.9)
       zlib-sync:
         specifier: ^0.1.8
         version: 0.1.9
       zod:
         specifier: ^3.24.1
         version: 3.24.1
+    optionalDependencies:
+      bufferutil:
+        specifier: ^4.0.9
+        version: 4.0.9
     devDependencies:
       '@eslint/js':
         specifier: ^9.19.0
@@ -254,6 +258,10 @@ packages:
 
   buffer@5.7.1:
     resolution: {integrity: sha512-EHcyIPBQ4BSGlvjB16k5KgAJ27CIsHY/2JBmCRReo48y9rQ3MaUzWX3KVlBa4U7MyX02HdVj0K7C3WaB3ju7FQ==}
+
+  bufferutil@4.0.9:
+    resolution: {integrity: sha512-WDtdLmJvAuNNPzByAYpRo2rF1Mmradw6gvWsQKf63476DDXmomT9zUiGypLcG4ibIM67vhAj8jJRdbmEws2Aqw==}
+    engines: {node: '>=6.14.2'}
 
   callsites@3.1.0:
     resolution: {integrity: sha512-P8BjAsXvZS+VIDUI11hHCQEv74YT67YUi5JJFNWIqL235sBmjX4+qx9Muvls5ivyNENctx46xQLQ3aTuE7ssaQ==}
@@ -531,6 +539,10 @@ packages:
   node-abi@3.65.0:
     resolution: {integrity: sha512-ThjYBfoDNr08AWx6hGaRbfPwxKV9kVzAzOzlLKbk2CuqXE2xnCh+cbAGnwM3t8Lq4v9rUB7VfondlkBckcJrVA==}
     engines: {node: '>=10'}
+
+  node-gyp-build@4.8.4:
+    resolution: {integrity: sha512-LA4ZjwlnUblHVgq0oBF3Jl/6h/Nvs5fzBLwdEF4nuxnFdsfajde4WfxtJr3CaiH+F6ewcIB/q4jQ4UzPyid+CQ==}
+    hasBin: true
 
   once@1.4.0:
     resolution: {integrity: sha512-lNaJgI+2Q5URQBkccEKHTQOPaXdUxnZZElQTZY0MFUAuaEqe1E+Nyvgdz/aIyNi6Z9MzO5dv1H8n58/GELp3+w==}
@@ -971,6 +983,11 @@ snapshots:
       base64-js: 1.5.1
       ieee754: 1.2.1
 
+  bufferutil@4.0.9:
+    dependencies:
+      node-gyp-build: 4.8.4
+    optional: true
+
   callsites@3.1.0: {}
 
   chalk@4.1.2:
@@ -1230,6 +1247,9 @@ snapshots:
     dependencies:
       semver: 7.6.3
 
+  node-gyp-build@4.8.4:
+    optional: true
+
   once@1.4.0:
     dependencies:
       wrappy: 1.0.2
@@ -1401,7 +1421,9 @@ snapshots:
 
   wrappy@1.0.2: {}
 
-  ws@8.18.0: {}
+  ws@8.18.0(bufferutil@4.0.9):
+    optionalDependencies:
+      bufferutil: 4.0.9
 
   yocto-queue@0.1.0: {}
 

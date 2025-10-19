@@ -19,6 +19,9 @@
 		"zlib-sync": "^0.1.8",
 		"zod": "^3.24.1"
 	},
+	"optionalDependencies": {
+		"bufferutil": "^4.0.9"
+	},
 	"scripts": {
 		"build": "tsc",
 		"lint": "eslint ./src/",
