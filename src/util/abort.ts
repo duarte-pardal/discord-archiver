@@ -1,4 +1,4 @@
-class AbortError extends Error {
+export class AbortError extends Error {
 	constructor() {
 		super("The operation was aborted.");
 	}
@@ -69,7 +69,10 @@ export function extendAbortSignal(signal: AbortSignal | null | undefined): { con
 	}
 }
 
-export function preventUnsettled<T>(signal: AbortSignal, message: string, promise: Promise<T>): Promise<T> {
+export function preventUnsettled<T>(signal: AbortSignal | null | undefined, message: string, promise: Promise<T>): Promise<T> {
+	if (signal == null) {
+		return promise;
+	}
 	return new Promise((res, rej) => {
 		let timeout: NodeJS.Timeout | undefined;
 		const abortHandler = () => {
@@ -92,7 +95,7 @@ export function preventUnsettled<T>(signal: AbortSignal, message: string, promis
 	});
 }
 
-export function preventUnsettledIterable<T, TReturn, TNext>(signal: AbortSignal, message: string, iterable: AsyncIterable<T, TReturn, TNext>): AsyncIterableIterator<T, TReturn, TNext> {
+export function preventUnsettledIterable<T, TReturn, TNext>(signal: AbortSignal | null | undefined, message: string, iterable: AsyncIterable<T, TReturn, TNext>): AsyncIterableIterator<T, TReturn, TNext> {
 	const originalIterator = iterable[Symbol.asyncIterator]();
 	const iterator = {
 		next: (...args: [] | [TNext]) => preventUnsettled(signal, message, originalIterator.next(...args)),

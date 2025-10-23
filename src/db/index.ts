@@ -122,7 +122,7 @@ class AsyncDatabaseConnection implements BaseDatabaseConnection {
 	request<R extends SingleRequest>(req: R): Promise<SingleResponseFor<R>> {
 		return new Promise((res, rej) => {
 			if (this.errored) {
-				rej(this.error);
+				rej(this.error instanceof Error ? new Error((this.error).message) : this.error);
 			} else {
 				this.#queue.push({ type: "single", res, rej });
 				this.#worker.postMessage(req);
@@ -134,7 +134,7 @@ class AsyncDatabaseConnection implements BaseDatabaseConnection {
 		if (this.errored) {
 			return {
 				next: () => {
-					return Promise.reject(this.error);
+					return Promise.reject(this.error instanceof Error ? new Error((this.error).message) : this.error);
 				},
 				[Symbol.asyncIterator]() {
 					return this;

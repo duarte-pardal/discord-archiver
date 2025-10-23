@@ -8,17 +8,16 @@ process.on("uncaughtExceptionMonitor", () => {
 import * as DT from "../discord-api/types.js";
 import { AddGuildMemberSnapshotRequest, AddReactionPlacementRequest, AddReactionResult, AddSnapshotResult, getDatabaseConnection, GetLastSyncedMessageIDRequest, RequestType, SetLastSyncedMessageIDRequest, SingleResponseFor, Timing } from "../db/index.js";
 import { GatewayCloseError, GatewayConnection } from "../discord-api/gateway/connection.js";
-import { apiReq, RequestResult } from "../discord-api/rest.js";
+import { RequestResult, RestManager, RestOptions, RateLimitRoute } from "../discord-api/rest.js";
 import { computeChannelPermissions, computeGuildPermissions } from "./permissions.js";
 import { areMapsEqual } from "../util/map-equality.js";
 import { abortError } from "../util/abort.js";
 import { parseArgs, ParseArgsConfig } from "node:util";
 import log from "../util/log.js";
 import { getTag } from "../discord-api/tag.js";
-import { RateLimiter } from "../util/rate-limiter.js";
 import { CachedTextLikeChannel, CachedGuild, guilds, isGuildTextLikeChannel, CachedThread, CachedChannel, directChannels, cacheThread, cacheChannel, CachedPermissionOverwrites, updateGuildProperties } from "./cache.js";
 import { Account, AccountOptions, accounts, getLeastGatewayOccupiedAccount, getLeastRESTOccupiedAccount, OngoingDispatchHandling, OngoingExpressionUploaderRequest, OngoingMessageSync, OngoingThreadSync } from "./accounts.js";
-import { onArchiveMessages, startProgressDisplay, stopProgressDisplay, updateProgressOutput } from "./progress.js";
+import { onArchiveMessages, onArchiveReactions, startProgressDisplay, stopProgressDisplay, updateProgressOutput } from "./progress.js";
 import { DownloadArguments, getCDNEmojiURL, getCDNHashURL, getDownloadTransactionFunction, normalizeURL } from "./files.js";
 import { mergeOptions } from "../util/http.js";
 import { setMaxListeners } from "node:events";
@@ -210,7 +209,15 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 	): Promise<AddSnapshotResult> {
 		const timing = fromCreateEvent ? null : { timestamp, realtime };
 
-		const restOptions = mergeOptions(account.restOptions, { signal: abortSignal });
+		const restOptions: RestOptions = {
+			fetchOptions: mergeOptions(account.fetchOptions, { signal: abortSignal }),
+			rateLimitRoute: RateLimitRoute.GetMessages,
+			rateLimitID: cachedChannel.id,
+		};
+		const reactionRestOptions: RestOptions = {
+			...restOptions,
+			rateLimitRoute: RateLimitRoute.GetReactions,
+		};
 
 		type ReactionData = {
 			emoji: DT.PartialEmoji;
@@ -242,17 +249,15 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 					const emoji = reaction.emoji.id === null ? reaction.emoji.name : `${reaction.emoji.name}:${reaction.emoji.id}`;
 
 					let userID = "0";
-					let rateLimitReset;
 					while (true) {
-						await rateLimitReset;
-						let response, data: DT.PartialUser[] | undefined;
-						({ response, data, rateLimitReset } = await account.request<DT.PartialUser[]>(`/channels/${cachedChannel.id}/messages/${message.id}/reactions/${emoji}?limit=100&type=${reactionType}&after=${userID}`, restOptions, true));
+						const { response, data } = await account.request<DT.PartialUser[]>(`/channels/${cachedChannel.id}/messages/${message.id}/reactions/${emoji}?limit=100&type=${reactionType}&after=${userID}`, reactionRestOptions);
 						if (abortSignal.aborted) throw abortError;
 						if (!response.ok) {
 							throw new ExpectedError(`Got HTTP ${response.status} ${response.statusText} while requesting reactions for the message with ID ${message.id} from #${cachedChannel.name} (${cachedChannel.id})`);
 						}
 						const users = data!;
 
+						onArchiveReactions(users.length);
 						reactionData.responses.push({
 							timestamp: Date.now(),
 							users,
@@ -298,9 +303,12 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 	}
 
 	async function requestUser(account: Account, userID: string, abortSignal: AbortSignal): Promise<DT.PartialUser> {
-		const restOptions = mergeOptions(account.restOptions, { signal: abortSignal });
+		const restOptions: RestOptions = {
+			fetchOptions: mergeOptions(account.fetchOptions, { signal: abortSignal }),
+			rateLimitRoute: RateLimitRoute.GetUser,
+		};
 
-		const { response, data } = await account.request<DT.PartialUser>(`/users/${userID}`, restOptions, true);
+		const { response, data } = await account.request<DT.PartialUser>(`/users/${userID}`, restOptions);
 		if (abortSignal.aborted) throw abortError;
 		if (!response.ok) {
 			throw new ExpectedError(`Got HTTP ${response.status} ${response.statusText} while requesting the user with ID ${userID}`);
@@ -315,7 +323,11 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 	// finish before starting the chunk downloads.
 	async function syncMessages(account: Account, channel: CachedTextLikeChannel | CachedThread): Promise<void> {
 		const abortController = new AbortController();
-		const restOptions = mergeOptions(account.restOptions, { signal: abortController.signal });
+		const restOptions: RestOptions = {
+			fetchOptions: mergeOptions(account.fetchOptions, { signal: abortController.signal }),
+			rateLimitRoute: RateLimitRoute.GetMessages,
+			rateLimitID: channel.id,
+		};
 
 		// Add this operation to the ongoing syncs list
 		const { promise: end, resolve: endOperation } = Promise.withResolvers<void>();
@@ -361,7 +373,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 			let previousIterationPromise: Promise<void> | undefined;
 
 			while (true) {
-				const { response, data, rateLimitReset } = await account.request<DT.Message[]>(`/channels/${channel.id}/messages?limit=100&after=${messageID}`, restOptions, true);
+				const { response, data } = await account.request<DT.Message[]>(`/channels/${channel.id}/messages?limit=100&after=${messageID}`, restOptions);
 				if (abortController.signal.aborted) throw abortError;
 				if (!response.ok) {
 					log.warning?.(`Stopped syncing messages from #${channel.name} (${channel.id}) using ${account.name} because we got a ${response.status} ${response.statusText} response.`);
@@ -432,7 +444,10 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 					try {
 						await Promise.all(promises);
 					} catch (err) {
-						if (err !== abortError && err instanceof ExpectedError) {
+						// Ensure that we don't return before requesting more database operations
+						await Promise.allSettled(promises);
+
+						if (err instanceof ExpectedError) {
 							log.warning?.(`Got an error while syncing messages from #${channel.name} (${channel.id}) using ${account.name}. This may be due to losing the ability to access the channel (for example, if the permissions changed). This sync operation will stop. ${err.toString()}.`);
 							throw abortError;
 						} else {
@@ -473,8 +488,6 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 					}
 					break;
 				}
-
-				await rateLimitReset;
 			}
 		} catch (err) {
 			if (err === abortError) {
@@ -500,7 +513,10 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 	}
 	async function syncArchivedThreads(account: Account, channel: CachedTextLikeChannel, type: ArchivedThreadListType) {
 		const abortController = new AbortController();
-		const restOptions = mergeOptions(account.restOptions, { signal: abortController.signal });
+		const restOptions: RestOptions = {
+			fetchOptions: mergeOptions(account.fetchOptions, { signal: abortController.signal }),
+			rateLimitRoute: RateLimitRoute.GetArchivedThreads,
+		};
 
 		const { promise: end, resolve: endOperation } = Promise.withResolvers<void>();
 		const sync: OngoingThreadSync = { type: "thread-sync", abortController, end, account, channel };
@@ -520,12 +536,11 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 			log.verbose?.(`Started enumerating ${ArchivedThreadListType[type]} archived threads from #${channel.name} (${channel.id}) using ${account.name}.`);
 
 			while (true) {
-				const { response, data, rateLimitReset } = await account.request<DT.ListThreadsResponse>(
+				const { response, data } = await account.request<DT.ListThreadsResponse>(
 					type === ArchivedThreadListType.Public ? `/channels/${channel.id}/threads/archived/public?limit=100&before=${encodeURIComponent(archiveTimestampString)}` :
 					type === ArchivedThreadListType.Private ? `/channels/${channel.id}/threads/archived/private?limit=100&before=${encodeURIComponent(archiveTimestampString)}` :
 					`/channels/${channel.id}/users/@me/threads/archived/private?limit=100&before=${encodeURIComponent(archiveTimestampString)}`,
 					restOptions,
-					true,
 				);
 				if (abortController.signal.aborted) throw abortError;
 				if (!response.ok) {
@@ -565,8 +580,6 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 				if (!list.has_more) {
 					break;
 				}
-
-				await rateLimitReset;
 			}
 
 			log.verbose?.(`Finished enumerating ${ArchivedThreadListType[type]} archived threads from #${channel.name} (${channel.id}) using ${account.name}.`);
@@ -588,9 +601,13 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 		}
 	}
 
-	async function requestExpressionUploaders(account: Account, cachedGuild: CachedGuild) {
+	async function requestExpressionUploaders(account: Account, guild: CachedGuild) {
 		const abortController = new AbortController();
-		const restOptions = mergeOptions(account.restOptions, { signal: abortController.signal });
+		const restOptions: RestOptions = {
+			fetchOptions: mergeOptions(account.fetchOptions, { signal: abortController.signal }),
+			rateLimitRoute: RateLimitRoute.GetEmojis,
+			rateLimitID: guild.id,
+		};
 
 		const { promise: end, resolve: endOperation } = Promise.withResolvers<void>();
 		const operation: OngoingExpressionUploaderRequest = {
@@ -598,17 +615,17 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 			abortController,
 			end,
 			account,
-			guild: cachedGuild,
+			guild: guild,
 		};
 		account.ongoingOperations.add(operation);
 		account.numberOfOngoingRESTOperations++;
 		updateProgressOutput();
 
 		try {
-			log.verbose?.(`Requesting the uploaders of emojis from guild ${cachedGuild.name} (${cachedGuild.id}) using ${account.name}.`);
-			const { response, data } = await account.request<DT.CustomEmoji[]>(`/guilds/${cachedGuild.id}/emojis`, restOptions, true);
+			log.verbose?.(`Requesting the uploaders of emojis from guild ${guild.name} (${guild.id}) using ${account.name}.`);
+			const { response, data } = await account.request<DT.CustomEmoji[]>(`/guilds/${guild.id}/emojis`, restOptions);
 			if (!response.ok) {
-				log.warning?.(`Got ${response.status} ${response.statusText} response while requesting the uploaders of emojis from guild ${cachedGuild.name} (${cachedGuild.id}) using ${account.name}.`);
+				log.warning?.(`Got ${response.status} ${response.statusText} response while requesting the uploaders of emojis from guild ${guild.name} (${guild.id}) using ${account.name}.`);
 				return;
 			}
 			const timestamp = Date.now();
@@ -621,8 +638,8 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 					log.warning?.(`Some emojis are missing an uploaders in the response to ${account.name}.`);
 				}
 			} else {
-				log.verbose?.(`Successfully obtained the uploaders of emojis from guild ${cachedGuild.name} (${cachedGuild.id}) using ${account.name}.`);
-				cachedGuild.areEmojiUploadersSynced = true;
+				log.verbose?.(`Successfully obtained the uploaders of emojis from guild ${guild.name} (${guild.id}) using ${account.name}.`);
+				guild.areEmojiUploadersSynced = true;
 
 				db.transaction(async () => {
 					const userIDs = new Set();
@@ -702,7 +719,10 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 		if (
 			!allReady ||
 			channel.pendingMessageSyncUpdate ||
-			!(options.archiveMessages && options.requestPastMessages)
+			!(options.archiveMessages && options.requestPastMessages) ||
+			// Checking the global abort signal is necessary to prevent making database requests after
+			// the database was closed.
+			globalAbortSignal.aborted
 		) return;
 		channel.pendingMessageSyncUpdate = true;
 
@@ -746,7 +766,8 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 			channel.type === DT.ChannelType.GuildVoice ||
 			channel.type === DT.ChannelType.GuildStageVoice ||
 			!channel.options.archiveThreads ||
-			!channel.options.requestArchivedThreads
+			!channel.options.requestArchivedThreads ||
+			globalAbortSignal.aborted
 		) return;
 
 		if (!channel.arePublicThreadsSynced && channel.publicThreadSync === null && channel.accountsWithReadPermission.length > 0) {
@@ -1837,12 +1858,10 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 				}
 			});
 
-			// TODO: This rate limiter needs to apply to each fetch, including repeated attempts after HTTP 429.
 			// TODO: Abort without waiting for the rate limiter.
-			const restRateLimiter = new RateLimiter(49, 1000);
-			async function request<T>(endpoint: string, options = account.restOptions, abortIfFail?: boolean): Promise<RequestResult<T>> {
-				await restRateLimiter.whenFree();
-				const result = await apiReq<T>(endpoint, options, abortIfFail);
+			const restManager = new RestManager();
+			async function request<T>(endpoint: string, options: RestOptions): Promise<RequestResult<T>> {
+				const result = await restManager.request<T>(endpoint, options);
 				if (result.response.status === 401 && accounts.has(account)) {
 					log.error?.(`Got HTTP status 401 Unauthorized while using ${account.name}. The authentication token is invalid. This account will be disconnected.`);
 					// This will immediately abort all operations
@@ -1887,7 +1906,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 				bot,
 				details: undefined,
 				gatewayConnection,
-				restOptions: {
+				fetchOptions: {
 					headers: {
 						authorization: accountOptions.token,
 					},

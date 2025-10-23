@@ -42,6 +42,13 @@ export function onArchiveMessages(count: number): void {
 	updateProgressOutput();
 }
 
+let reactionsArchived = 0;
+export function onArchiveReactions(count: number): void {
+	reactionsArchived += count;
+	updateProgressOutput();
+}
+
+
 function pad2(n: number): string {
 	return n.toString().padStart(2, "0");
 }
@@ -86,8 +93,8 @@ export function updateProgressOutput(): void {
 
 	const topMessageSyncs = messageSyncs
 		.sort((a, b) =>
-			a.progress === null ? -1 :
-			b.progress === null ? 1 :
+			a.progress === null ? 1 :
+			b.progress === null ? -1 :
 			a.progress - b.progress,
 		)
 		.slice(0, 10);
@@ -121,7 +128,7 @@ export function updateProgressOutput(): void {
 
 	setProgress(`\n\
 ${output !== "" ? output : "Nothing left to sync."}
-Archived ${messagesArchived} messages.\
+Archived ${messagesArchived} messages and ${reactionsArchived} reactions.\
 ${fileStore === undefined ? "" : `\nDownloaded ${filesDownloaded} files (${bytesDownloaded >> 20} MiB). Ignored ${duplicateFilesDownloaded} duplicates (${duplicateBytesDownloaded >> 20} MiB).`}`,
 	);
 }

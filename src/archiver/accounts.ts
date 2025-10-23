@@ -1,6 +1,6 @@
 import { GatewayConnection, GatewayTypes } from "../discord-api/gateway/connection.js";
 import { CachedGuild, CachedTextLikeChannel, CachedThread } from "./cache.js";
-import { RequestResult } from "../discord-api/rest.js";
+import { RequestResult, RestOptions } from "../discord-api/rest.js";
 import { DispatchEventName } from "../discord-api/types.js";
 
 export type OngoingOperationBase = {
@@ -66,8 +66,8 @@ export type Account = AccountOptions & {
 		tag: string;
 	} | undefined;
 	gatewayConnection: GatewayConnection;
-	restOptions: RequestInit;
-	request<T>(endpoint: string, options?: RequestInit, abortIfFail?: boolean): Promise<RequestResult<T>>;
+	fetchOptions: RequestInit;
+	request<T>(endpoint: string, options: RestOptions): Promise<RequestResult<T>>;
 
 	disconnect: () => Promise<void>;
 

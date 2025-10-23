@@ -1,3 +1,5 @@
+import { abortError } from "./abort.js";
+
 /**
  * Class that handles situations where there is a limit on how many operations can be running at
  * the same time.
@@ -15,7 +17,7 @@ export class ConcurrencyLimiter {
 	 * callback will be removed from the queue. Returns the promise returned by the callback.
 	 */
 	runWhenFree<T>(callback: () => Promise<T>, abortSignal?: AbortSignal | null): Promise<T> {
-		return new Promise<T>((resolve) => {
+		return new Promise<T>((resolve, reject) => {
 			const runNow = () => {
 				const promise = callback();
 				resolve(promise);
@@ -43,15 +45,20 @@ export class ConcurrencyLimiter {
 				} else {
 					const handler = () => {
 						this.#queue.delete(runNowAndRemoveListener);
+						reject(abortError);
 					};
 					const runNowAndRemoveListener = () => {
-						runNow();
 						abortSignal.removeEventListener("abort", handler);
+						runNow();
 					};
 					abortSignal.addEventListener("abort", handler, { once: true });
 					this.#queue.add(runNowAndRemoveListener);
 				}
 			}
 		});
+	}
+
+	getQueueSize(): number {
+		return this.#queue.size;
 	}
 }
