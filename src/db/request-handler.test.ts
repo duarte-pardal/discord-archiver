@@ -689,6 +689,44 @@ const guildMembers: GuildMemberEntry[] = [
 			},
 		},
 	},
+	{
+		options: { name: "member with decorations" },
+		data: {
+			avatar: null,
+			banner: null,
+			communication_disabled_until: null,
+			deaf: false,
+			flags: 0,
+			joined_at: "2025-11-15T00:00:00.000000+00:00",
+			mute: false,
+			nick: null,
+			pending: false,
+			premium_since: null,
+			roles: [],
+			user: generateUser(),
+			avatar_decoration_data: {
+				asset: "a_44d96dca4f514777925f23d841f36fac",
+				sku_id: "1349486948942745695",
+				expires_at: null,
+			},
+			collectibles: {
+				nameplate: {
+					sku_id: "1349849614198505602",
+					asset: "nameplates/nameplates/twilight/",
+					label: "COLLECTIBLES_NAMEPLATES_TWILIGHT_A11Y",
+					palette: "cobalt",
+				},
+			},
+			display_name_styles: {
+				font_id: 3,
+				effect_id: 2,
+				colors: [
+					1234567,
+					7654321,
+				],
+			},
+		},
+	},
 ];
 
 type MessageEntry = {

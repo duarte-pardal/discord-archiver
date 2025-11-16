@@ -215,7 +215,7 @@ WHERE reactions.message_id = :message_id;
 		guild: getStatements("guild", null, ["name", "icon", "splash", "discovery_splash", "owner_id", "afk_channel_id", "afk_timeout", "widget_enabled", "widget_channel_id", "verification_level", "default_message_notifications", "explicit_content_filter", "mfa_level", "system_channel_id", "system_channel_flags", "rules_channel_id", "max_presences", "max_members", "vanity_url_code", "description", "banner", "premium_tier", "premium_subscription_count", "preferred_locale", "public_updates_channel_id", "max_video_channel_users", "max_stage_video_channel_users", "nsfw_level", "premium_progress_bar_enabled", "profile__tag", "profile__badge"], [], defaultIsEqualToSnapshot),
 		role: getStatements("role", "_guild_id", ["name", "colors__primary_color", "colors__secondary_color", "colors__tertiary_color", "hoist", "icon", "unicode_emoji", "position", "permissions", "mentionable", "flags", "tags__integration_id", "tags__subscription_listing_id", "tags__available_for_purchase", "tags__guild_connections"], ["_guild_id", "managed", "tags__bot_id", "tags__premium_subscriber"], defaultIsEqualToSnapshot),
 		member: (() => {
-			const mutableColumns = ["nick", "avatar", "avatar_decoration_data__asset", "avatar_decoration_data__sku_id", "avatar_decoration_data__expires_at", "collectibles__nameplate__asset", "collectibles__nameplate__sku_id", "collectibles__nameplate__label", "collectibles__nameplate__palette", "collectibles__nameplate__expires_at", "banner", "roles", "joined_at", "premium_since", "deaf", "mute", "flags", "pending", "communication_disabled_until"];
+			const mutableColumns = ["nick", "avatar", "avatar_decoration_data__asset", "avatar_decoration_data__sku_id", "avatar_decoration_data__expires_at", "collectibles__nameplate__asset", "collectibles__nameplate__sku_id", "collectibles__nameplate__label", "collectibles__nameplate__palette", "collectibles__nameplate__expires_at", "display_name_styles__font_id", "display_name_styles__effect_id", "display_name_styles__colors", "banner", "roles", "joined_at", "premium_since", "deaf", "mute", "flags", "pending", "communication_disabled_until"];
 			const allMutableColumns = [...mutableColumns, "_extra"];
 			const mk = allMutableColumns.join(", ");
 			const mv = allMutableColumns.map(k => ":" + k).join(", ");
@@ -303,6 +303,9 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _guild_id = :_guild_id AND _del
 		collectibles__nameplate__label: null,
 		collectibles__nameplate__palette: null,
 		collectibles__nameplate__expires_at: null,
+		display_name_styles__font_id: null,
+		display_name_styles__effect_id: null,
+		display_name_styles__colors: null,
 		banner: null,
 		roles: null,
 		joined_at: null,
@@ -780,7 +783,7 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _guild_id = :_guild_id AND _del
 							member.collectibles.nameplate === null &&
 							Object.keys(member.collectibles).length === 1
 						) {
-							member.collectibles = null;
+							member.collectibles = undefined;
 						}
 						const user = getObjectSnapshot(objectStatements.user, snapshot._user_id, req.timestamp, decodeUser)!.data;
 						return member === undefined ?

@@ -1282,6 +1282,7 @@ export type GuildMember = {
 	avatar?: string | null;
 	avatar_decoration_data?: AvatarDecorationData | null;
 	collectibles?: Collectibles | null;
+	display_name_styles?: DisplayNameStyle | null;
 	/** The member's guild banner hash */
 	banner?: string | null;
 	/** Role IDs */

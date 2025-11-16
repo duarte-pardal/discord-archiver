@@ -224,6 +224,9 @@ CREATE TABLE member_snapshots (
 	collectibles__nameplate__label STRING, -- the nameplate's accessibility description
 	collectibles__nameplate__palette STRING, -- the nameplate's color palette
 	collectibles__nameplate__expires_at INTEGER, -- Unix timestamp of when the current nameplate expires
+	display_name_styles__font_id INTEGER, -- the font to use for the member's display name
+	display_name_styles__effect_id INTEGER, -- the effect to use for the member's display name
+	display_name_styles__colors TEXT, -- the colors to use for the member's display name
 	banner BLOB, -- the member's guild banner hash
 	roles BLOB, -- array of role IDs
 	joined_at INTEGER, -- when the user joined the guild, or NULL if this snapshot indicates that the user left the guild

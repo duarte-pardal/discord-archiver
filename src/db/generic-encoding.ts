@@ -249,7 +249,7 @@ const schemas: { [OT in ObjectType]: Schema<InputObjectType[OT]> } = {
 			["asset", ValueType.ImageHash],
 			["sku_id", ValueType.BigInteger],
 			["expires_at", ValueType.Integer, NullValue.Null],
-		], NullValue.Null],
+		], NullValue.Absent],
 		["collectibles", [
 			["nameplate", [
 				["asset", ValueType.String],
@@ -258,7 +258,12 @@ const schemas: { [OT in ObjectType]: Schema<InputObjectType[OT]> } = {
 				["palette", ValueType.String],
 				["expires_at", ValueType.Integer, NullValue.Null],
 			], NullValue.Null],
-		], NullValue.Null],
+		], NullValue.Absent],
+		["display_name_styles", [
+			["font_id", ValueType.Integer],
+			["effect_id", ValueType.Integer],
+			["colors", ValueType.JSON],
+		], NullValue.Absent],
 		["banner", ValueType.ImageHash, NullValue.Null],
 		["roles", ValueType.BigIntegerArray],
 		["joined_at", ValueType.Timestamp],
@@ -271,8 +276,6 @@ const schemas: { [OT in ObjectType]: Schema<InputObjectType[OT]> } = {
 		["unusual_dm_activity_until", "ignore"], // not archived
 
 		["guild_id", "ignore"], // specified separately in the add snapshot request
-
-		["collectibles", "ignore"],
 	],
 	[ObjectType.Channel]: [
 		// What the SQL `NULL` value should mean depends on the channel type. Currently, we always decode those to `null`. Namely:
