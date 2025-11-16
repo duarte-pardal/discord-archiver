@@ -12,6 +12,9 @@ import { encodeSnowflakeArray, encodeObject, ObjectType, encodeImageHash, decode
 import { Logger } from "../util/log.js";
 import { snowflakeToTimestamp } from "../discord-api/snowflake.js";
 import { createOnceFunction } from "../util/once.js";
+import { areUint8ArraysEqual } from "../util/typed-array-equality.js";
+import { isDeepStrictEqual } from "node:util";
+import { normalizeURL } from "../discord-api/media-url-normalization.js";
 
 const SNOWFLAKE_LOWER_BOUND = 1n << 32n;
 const MAX_INT64 = (1n << 63n) - 1n;
@@ -47,19 +50,15 @@ export function getRequestHandler({ path, log }: { path: string; log?: Logger })
 	}
 
 	type ObjectStatements = {
+		immutableColumns: string[];
+		mutableColumns: string[];
+		isEqualToSnapshot: (this: ObjectStatements, previousSnapshot: any, object: any) => boolean;
 		/** Checks if there is at least one snapshot of the object archived. */
 		doesExist: Statement;
 		/** Gets the latest snapshot for an object with a given `id`, or all objects if and only if `$getAll` is `1` */
 		getLatestSnapshot: Statement;
 		/** Gets the latest previous snapshot earlier than or at `_timestamp` for an object with a given `id` */
 		getPreviousSnapshot: Statement;
-		/** Checks if the snapshot properties of the latest snapshot are equal to those of the provided object. */
-		// TODO: We need a better comparison system because:
-		// - Discord sends some objects with properties set to null from one source and absent from another source
-		// - Discord always generates new attachment URLs
-		isLatestSnapshotEqual: Statement;
-		/** Gets the _timestamp value of the latest snapshot. */
-		getLatestTimestamp: Statement;
 		/** Adds a snapshot to the table of latest snapshots. */
 		addLatestSnapshot: Statement;
 		/** Copies the latest snapshot to the table of the previous snapshots. */
@@ -80,40 +79,76 @@ export function getRequestHandler({ path, log }: { path: string; log?: Logger })
 	};
 	type DeletableChildObjectStatements = DeletableObjectStatements & ChildObjectStatements;
 
-	function getStatements(objectName: string, parentIDName: null, snapshotKeys: string[], objectKeys: string[]): DeletableObjectStatements;
-	function getStatements(objectName: string, parentIDName: string, snapshotKeys: string[], objectKeys: string[]): DeletableChildObjectStatements;
-	function getStatements(objectName: string, parentIDName: string | null, snapshotKeys: string[], objectKeys: string[]): DeletableObjectStatements {
-		snapshotKeys.push("_extra");
-		const sk = snapshotKeys.join(", ");
-		const sv = snapshotKeys.map(k => ":" + k).join(", ");
-		const ok = objectKeys.map(k => k + ", ").join("");
-		const ov = objectKeys.map(k => `:${k}, `).join("");
-		const statements = {
+	function defaultIsEqualToSnapshot(this: ObjectStatements, previousSnapshot: any, object: any) {
+		for (const key of this.mutableColumns) {
+			if (!areSqlValuesEqual(object[key], previousSnapshot[key])) {
+				return false;
+			}
+		}
+		const snapshotDecodedExtra = previousSnapshot._extra == null ? {} : JSON.parse(previousSnapshot._extra);
+		if (!isDeepStrictEqual(snapshotDecodedExtra, object._decoded_extra)) {
+			return false;
+		}
+		return true;
+	}
+	function normalizeEmbedMedia(media: DT.EmbedMedia | null | undefined) {
+		if (media?.url != null) {
+			media.url = normalizeURL(media.url);
+		}
+		if (media?.proxy_url != null) {
+			media.proxy_url = normalizeURL(media.proxy_url);
+		}
+	}
+	type MessageExtra = { _decoded_extra: { embeds?: DT.Message["embeds"] } } & Record<string, any>;
+	function isMessageEqualToSnapshot(this: ObjectStatements, previousSnapshot: any, object: MessageExtra) {
+		for (const key of this.mutableColumns) {
+			if (!areSqlValuesEqual(object[key], previousSnapshot[key])) {
+				return false;
+			}
+		}
+		const snapshotDecodedExtra: MessageExtra = previousSnapshot._extra == null ? {} : JSON.parse(previousSnapshot._extra);
+		for (const embed of [...(snapshotDecodedExtra.embeds ?? []), ...(object._decoded_extra.embeds ?? [])]) {
+			normalizeEmbedMedia(embed.image);
+			normalizeEmbedMedia(embed.thumbnail);
+			normalizeEmbedMedia(embed.video);
+		}
+		if (!isDeepStrictEqual(snapshotDecodedExtra, object._decoded_extra)) {
+			return false;
+		}
+		return true;
+	}
+
+	function getStatements(objectName: string, parentIDName: null, mutableColumns: string[], immutableColumns: string[], isEqualToSnapshot: ObjectStatements["isEqualToSnapshot"]): DeletableObjectStatements;
+	function getStatements(objectName: string, parentIDName: string, mutableColumns: string[], immutableColumns: string[], isEqualToSnapshot: ObjectStatements["isEqualToSnapshot"]): DeletableChildObjectStatements;
+	function getStatements(objectName: string, parentIDName: string | null, mutableColumns: string[], immutableColumns: string[], isEqualToSnapshot: ObjectStatements["isEqualToSnapshot"]): DeletableObjectStatements {
+		const allMutableColumns = [...mutableColumns, "_extra"];
+		const mk = allMutableColumns.join(", ");
+		const mv = allMutableColumns.map(k => ":" + k).join(", ");
+		const ik = immutableColumns.map(k => k + ", ").join("");
+		const iv = immutableColumns.map(k => `:${k}, `).join("");
+		const statements: DeletableObjectStatements = {
+			immutableColumns,
+			mutableColumns,
+			isEqualToSnapshot,
 			doesExist: db.prepare(`\
 SELECT 1 FROM latest_${objectName}_snapshots WHERE id = :id;
 `),
 			getLatestSnapshot: db.prepare(`\
-SELECT id, _deleted, ${ok} _timestamp, ${sk} FROM latest_${objectName}_snapshots WHERE :$getAll = 1 OR id = :id;
+SELECT id, _deleted, ${ik} _timestamp, ${mk} FROM latest_${objectName}_snapshots WHERE :$getAll = 1 OR id = :id;
 `),
 			getPreviousSnapshot: db.prepare(`\
-SELECT id, max(_timestamp), ${sk} FROM previous_${objectName}_snapshots WHERE id = :id AND _timestamp <= :_timestamp;
-`),
-			isLatestSnapshotEqual: db.prepare(`\
-SELECT 1 FROM latest_${objectName}_snapshots WHERE id = :id AND ${snapshotKeys.map(k => `${k} IS :${k}`).join(" AND ")};
-`),
-			getLatestTimestamp: db.prepare(`\
-SELECT _timestamp FROM latest_${objectName}_snapshots WHERE id = :id;
+SELECT id, max(_timestamp), ${mk} FROM previous_${objectName}_snapshots WHERE id = :id AND _timestamp <= :_timestamp;
 `),
 			addLatestSnapshot: db.prepare(`\
-INSERT INTO latest_${objectName}_snapshots (id, ${ok} _timestamp, ${sk})
-VALUES (:id, ${ov} :_timestamp, ${sv});
+INSERT INTO latest_${objectName}_snapshots (id, ${ik} _timestamp, ${mk})
+VALUES (:id, ${iv} :_timestamp, ${mv});
 `),
 			copyLatestSnapshot: db.prepare(`\
-INSERT INTO previous_${objectName}_snapshots (id, _timestamp, ${sk})
-SELECT id, _timestamp, ${sk} FROM latest_${objectName}_snapshots WHERE id = :id;
+INSERT INTO previous_${objectName}_snapshots (id, _timestamp, ${mk})
+SELECT id, _timestamp, ${mk} FROM latest_${objectName}_snapshots WHERE id = :id;
 `),
 			replaceLatestSnapshot: db.prepare(`\
-UPDATE latest_${objectName}_snapshots SET _timestamp = :_timestamp, ${snapshotKeys.map(k => `${k} = :${k}`).join(", ")} WHERE id = :id;
+UPDATE latest_${objectName}_snapshots SET _timestamp = :_timestamp, ${allMutableColumns.map(k => `${k} = :${k}`).join(", ")} WHERE id = :id;
 `),
 			markAsDeleted: db.prepare(`\
 UPDATE latest_${objectName}_snapshots SET _deleted = :_deleted WHERE id = :id;
@@ -122,7 +157,7 @@ UPDATE latest_${objectName}_snapshots SET _deleted = :_deleted WHERE id = :id;
 		if (parentIDName !== null) {
 			Object.assign(statements, {
 				getLatestSnapshotsByParentID: db.prepare(`\
-SELECT id, _deleted, ${ok} _timestamp, ${sk} FROM latest_${objectName}_snapshots WHERE ${parentIDName} IS :$parentID;
+SELECT id, _deleted, ${ik} _timestamp, ${mk} FROM latest_${objectName}_snapshots WHERE ${parentIDName} IS :$parentID;
 `),
 				getNotDeletedObjectIDsByParentID: db.prepare(`\
 SELECT id FROM latest_${objectName}_snapshots WHERE ${parentIDName} IS :$parentID AND _deleted IS NULL;
@@ -175,53 +210,52 @@ WHERE reactions.message_id = :message_id;
 		setThreadLastSyncedMessageID: db.prepare("UPDATE latest_thread_snapshots SET _last_synced_message_id = :_last_synced_message_id WHERE id = :id;"),
 	} as const;
 	const objectStatements = {
-		user: getStatements("user", null, ["username", "discriminator", "global_name", "avatar", "avatar_decoration_data__asset", "avatar_decoration_data__sku_id", "avatar_decoration_data__expires_at", "collectibles__nameplate__asset", "collectibles__nameplate__sku_id", "collectibles__nameplate__label", "collectibles__nameplate__palette", "collectibles__nameplate__expires_at", "display_name_styles__font_id", "display_name_styles__effect_id", "display_name_styles__colors", "primary_guild__identity_guild_id", "primary_guild__identity_enabled", "primary_guild__tag", "primary_guild__badge", "public_flags"], ["bot", "system"]),
-		guild: getStatements("guild", null, ["name", "icon", "splash", "discovery_splash", "owner_id", "afk_channel_id", "afk_timeout", "widget_enabled", "widget_channel_id", "verification_level", "default_message_notifications", "explicit_content_filter", "mfa_level", "system_channel_id", "system_channel_flags", "rules_channel_id", "max_presences", "max_members", "vanity_url_code", "description", "banner", "premium_tier", "premium_subscription_count", "preferred_locale", "public_updates_channel_id", "max_video_channel_users", "max_stage_video_channel_users", "nsfw_level", "premium_progress_bar_enabled", "profile__tag", "profile__badge"], []),
-		role: getStatements("role", "_guild_id", ["name", "colors__primary_color", "colors__secondary_color", "colors__tertiary_color", "hoist", "icon", "unicode_emoji", "position", "permissions", "mentionable", "flags", "tags__integration_id", "tags__subscription_listing_id", "tags__available_for_purchase", "tags__guild_connections"], ["_guild_id", "managed", "tags__bot_id", "tags__premium_subscriber"]),
+		// Users can be compared with the default function even though they contain a JSON-encoded property because that property contains no objects (i.e. there's no issues with property order).
+		user: getStatements("user", null, ["username", "discriminator", "global_name", "avatar", "avatar_decoration_data__asset", "avatar_decoration_data__sku_id", "avatar_decoration_data__expires_at", "collectibles__nameplate__asset", "collectibles__nameplate__sku_id", "collectibles__nameplate__label", "collectibles__nameplate__palette", "collectibles__nameplate__expires_at", "display_name_styles__font_id", "display_name_styles__effect_id", "display_name_styles__colors", "primary_guild__identity_guild_id", "primary_guild__identity_enabled", "primary_guild__tag", "primary_guild__badge", "public_flags"], ["bot", "system"], defaultIsEqualToSnapshot),
+		guild: getStatements("guild", null, ["name", "icon", "splash", "discovery_splash", "owner_id", "afk_channel_id", "afk_timeout", "widget_enabled", "widget_channel_id", "verification_level", "default_message_notifications", "explicit_content_filter", "mfa_level", "system_channel_id", "system_channel_flags", "rules_channel_id", "max_presences", "max_members", "vanity_url_code", "description", "banner", "premium_tier", "premium_subscription_count", "preferred_locale", "public_updates_channel_id", "max_video_channel_users", "max_stage_video_channel_users", "nsfw_level", "premium_progress_bar_enabled", "profile__tag", "profile__badge"], [], defaultIsEqualToSnapshot),
+		role: getStatements("role", "_guild_id", ["name", "colors__primary_color", "colors__secondary_color", "colors__tertiary_color", "hoist", "icon", "unicode_emoji", "position", "permissions", "mentionable", "flags", "tags__integration_id", "tags__subscription_listing_id", "tags__available_for_purchase", "tags__guild_connections"], ["_guild_id", "managed", "tags__bot_id", "tags__premium_subscriber"], defaultIsEqualToSnapshot),
 		member: (() => {
-			const snapshotKeys = ["_extra", "nick", "avatar", "avatar_decoration_data__asset", "avatar_decoration_data__sku_id", "avatar_decoration_data__expires_at", "collectibles__nameplate__asset", "collectibles__nameplate__sku_id", "collectibles__nameplate__label", "collectibles__nameplate__palette", "collectibles__nameplate__expires_at", "banner", "roles", "joined_at", "premium_since", "deaf", "mute", "flags", "pending", "communication_disabled_until"];
-			const sk = snapshotKeys.join(", ");
-			const sv = snapshotKeys.map(k => ":" + k).join(", ");
+			const mutableColumns = ["nick", "avatar", "avatar_decoration_data__asset", "avatar_decoration_data__sku_id", "avatar_decoration_data__expires_at", "collectibles__nameplate__asset", "collectibles__nameplate__sku_id", "collectibles__nameplate__label", "collectibles__nameplate__palette", "collectibles__nameplate__expires_at", "banner", "roles", "joined_at", "premium_since", "deaf", "mute", "flags", "pending", "communication_disabled_until"];
+			const allMutableColumns = [...mutableColumns, "_extra"];
+			const mk = allMutableColumns.join(", ");
+			const mv = allMutableColumns.map(k => ":" + k).join(", ");
 			return {
+				immutableColumns: ["_guild_id", "_user_id"],
+				mutableColumns,
+				isEqualToSnapshot: defaultIsEqualToSnapshot,
 				doesExist: db.prepare(`\
 SELECT 1 FROM member_snapshots WHERE _guild_id = :_guild_id AND _user_id = :_user_id;
 `),
 				getLatestSnapshot: db.prepare(`\
-SELECT _guild_id, _user_id, max(_timestamp) AS _timestamp, ${sk} FROM member_snapshots WHERE _guild_id = :_guild_id AND _user_id = :_user_id;
+SELECT _guild_id, _user_id, max(_timestamp) AS _timestamp, ${mk} FROM member_snapshots WHERE _guild_id IS :_guild_id AND _user_id IS :_user_id;
 `),
 				getPreviousSnapshot: db.prepare(`\
-SELECT _guild_id, _user_id, max(_timestamp), ${sk} FROM member_snapshots WHERE _guild_id = :_guild_id AND _user_id = :_user_id AND _timestamp <= :_timestamp;
-`),
-				isLatestSnapshotEqual: db.prepare(`
-SELECT 1 FROM member_snapshots WHERE _guild_id = :_guild_id AND _user_id = :_user_id AND _timestamp = (SELECT max(_timestamp) FROM member_snapshots WHERE _guild_id = :_guild_id AND _user_id = :_user_id) AND ${snapshotKeys.map(k => `${k} IS :${k}`).join(" AND ")};
-`),
-				getLatestTimestamp: db.prepare(`\
-SELECT max(_timestamp) AS _timestamp FROM member_snapshots WHERE _guild_id = :_guild_id AND _user_id = :_user_id;
+SELECT _guild_id, _user_id, max(_timestamp), ${mk} FROM member_snapshots WHERE _guild_id = :_guild_id AND _user_id = :_user_id AND _timestamp <= :_timestamp;
 `),
 				addLatestSnapshot: db.prepare(`\
-INSERT INTO member_snapshots (_guild_id, _user_id, _timestamp, ${sk})
-VALUES (:_guild_id, :_user_id, :_timestamp, ${sv});
+INSERT INTO member_snapshots (_guild_id, _user_id, _timestamp, ${mk})
+VALUES (:_guild_id, :_user_id, :_timestamp, ${mv});
 `),
 				copyLatestSnapshot: db.prepare(`\
 SELECT 0 WHERE FALSE;
 `),
 				replaceLatestSnapshot: db.prepare(`\
-INSERT INTO member_snapshots (_guild_id, _user_id, _timestamp, ${sk})
-VALUES (:_guild_id, :_user_id, :_timestamp, ${sv});
+INSERT INTO member_snapshots (_guild_id, _user_id, _timestamp, ${mk})
+VALUES (:_guild_id, :_user_id, :_timestamp, ${mv});
 `),
 				getLatestSnapshotsByParentID: db.prepare(`\
-SELECT _guild_id, _user_id, _timestamp, ${sk} FROM member_snapshots WHERE _guild_id IS :$parentID AND _timestamp = (SELECT max(_timestamp) FROM member_snapshots subquery WHERE subquery._guild_id = :$parentID AND subquery._user_id = member_snapshots._user_id);
+SELECT _guild_id, _user_id, _timestamp, ${mk} FROM member_snapshots WHERE _guild_id IS :$parentID AND _timestamp = (SELECT max(_timestamp) FROM member_snapshots subquery WHERE subquery._guild_id = :$parentID AND subquery._user_id = member_snapshots._user_id);
 `),
 				getNotDeletedObjectIDsByParentID: db.prepare(`\
 SELECT _user_id AS id FROM member_snapshots WHERE _guild_id IS :$parentID AND _timestamp = (SELECT max(_timestamp) FROM member_snapshots subquery WHERE subquery._guild_id = :$parentID AND subquery._user_id = member_snapshots._user_id);
 `),
-			};
+			} satisfies ChildObjectStatements;
 		})(),
-		channel: getStatements("channel", "guild_id", ["position", "permission_overwrites", "name", "topic", "nsfw", "bitrate", "user_limit", "rate_limit_per_user", "icon", "owner_id", "parent_id", "rtc_region", "video_quality_mode", "default_auto_archive_duration", "flags", "default_reaction_emoji", "default_thread_rate_limit_per_user", "default_sort_order", "default_forum_layout", "default_tag_setting"], ["guild_id", "type"]),
-		thread: getStatements("thread", "parent_id", ["name", "rate_limit_per_user", "owner_id", "thread_metadata__archived", "thread_metadata__auto_archive_duration", "thread_metadata__archive_timestamp", "thread_metadata__locked", "thread_metadata__invitable", "thread_metadata__create_timestamp", "flags", "applied_tags"], ["parent_id", "type"]),
-		forumTag: getStatements("forum_tag", "channel_id", ["name", "moderated", "emoji"], ["channel_id"]),
+		channel: getStatements("channel", "guild_id", ["position", "permission_overwrites", "name", "topic", "nsfw", "bitrate", "user_limit", "rate_limit_per_user", "icon", "owner_id", "parent_id", "rtc_region", "video_quality_mode", "default_auto_archive_duration", "flags", "default_reaction_emoji", "default_thread_rate_limit_per_user", "default_sort_order", "default_forum_layout", "default_tag_setting"], ["guild_id", "type"], defaultIsEqualToSnapshot),
+		thread: getStatements("thread", "parent_id", ["name", "rate_limit_per_user", "owner_id", "thread_metadata__archived", "thread_metadata__auto_archive_duration", "thread_metadata__archive_timestamp", "thread_metadata__locked", "thread_metadata__invitable", "thread_metadata__create_timestamp", "flags", "applied_tags"], ["parent_id", "type"], defaultIsEqualToSnapshot),
+		forumTag: getStatements("forum_tag", "channel_id", ["name", "moderated", "emoji"], ["channel_id"], defaultIsEqualToSnapshot),
 		message: {
-			...getStatements("message", "channel_id", ["content", "edited_timestamp", "mention_everyone", "_mention_ids", "mention_roles", "flags", "_attachment_ids"], ["channel_id", "author__id", "tts", "type", "message_reference__message_id", "message_reference__channel_id", "message_reference__guild_id", "_sticker_ids"]),
+			...getStatements("message", "channel_id", ["content", "edited_timestamp", "mention_everyone", "_mention_ids", "mention_roles", "flags", "_attachment_ids"], ["channel_id", "author__id", "tts", "type", "message_reference__message_id", "message_reference__channel_id", "message_reference__guild_id", "_sticker_ids"], isMessageEqualToSnapshot),
 			// BUG: Search is broken on threads.
 			search: db.prepare(`\
 SELECT
@@ -242,7 +276,7 @@ WHERE message_fts_index MATCH :$query;
 `),
 		},
 		guildEmoji: {
-			...getStatements("guild_emoji", "_guild_id", ["name", "roles"], ["_guild_id", "user__id", "require_colons", "managed", "animated"]),
+			...getStatements("guild_emoji", "_guild_id", ["name", "roles"], ["_guild_id", "user__id", "require_colons", "managed", "animated"], defaultIsEqualToSnapshot),
 			setUploader: db.prepare(`\
 UPDATE latest_guild_emoji_snapshots SET user__id = :user__id WHERE id = :id;
 `),
@@ -252,11 +286,13 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _guild_id = :_guild_id AND _del
 		},
 	} as const;
 
+	/** Row of the member snapshots table used to indicate that the member has left the server. */
 	const nullMember = {
 		_guild_id: 0n, // will be replaced when used
 		_user_id: 0n, // will be replaced when used
 		_timestamp: 0n, // will be replaced when used
 		_extra: null,
+		_decoded_extra: {},
 		nick: null,
 		avatar: null,
 		avatar_decoration_data__asset: null,
@@ -296,6 +332,12 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _guild_id = :_guild_id AND _del
 		};
 	}
 
+	function areSqlValuesEqual(a: any, b: any) {
+		return b instanceof Uint8Array ?
+			(a instanceof Uint8Array && areUint8ArraysEqual(a, b)) :
+			(a === b);
+	}
+
 	// TODO: Benchmark and optimize
 	/**
 	 * Adds a snapshot of an object to the database.
@@ -303,12 +345,22 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _guild_id = :_guild_id AND _del
 	 * recorded snapshot or, if there are no snapshots, from `partialDefault`.
 	 * @param checkIfChanged If `true`, prevent recording a snapshot that is equal to the latest snapshot
 	 */
-	function addSnapshot(statements: ObjectStatements, object: any, partialKeys?: string[], checkIfChanged = true): AddSnapshotResult {
+	function addSnapshot(statements: ObjectStatements, object: any, partialKeys?: string[]): AddSnapshotResult {
+		object.$getAll = 0;
+		const latestSnapshot: any = statements.getLatestSnapshot.get(object);
+		if (latestSnapshot !== undefined && statements !== objectStatements.member) {
+			for (const key of statements.immutableColumns) {
+				if (!areSqlValuesEqual(object[key], latestSnapshot[key])) {
+					throw new Error(`The field "${key}", assumed to be immutable, has a different value than the one in the database.`);
+				}
+			}
+		}
+
 		if (partialKeys != null) {
-			// `object` has fields missing. Add the missing fields from the last snapshot.
-			object.$getAll = 0;
-			const oldObject: any = statements.getLatestSnapshot.get(object);
-			if (oldObject === undefined || oldObject._timestamp === null) {
+			// `object` might have missing fields.
+			if (latestSnapshot === undefined || latestSnapshot._timestamp === null) {
+				// There are no snapshots yet or the latest snapshot is a member leave snapshot.
+				// Try to add it anyway, but it will fail if there are missing fields.
 				try {
 					statements.addLatestSnapshot.run(object);
 					return AddSnapshotResult.AddedFirstSnapshot;
@@ -320,8 +372,9 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _guild_id = :_guild_id AND _del
 					}
 				}
 			}
+			// Add the missing fields from the latest snapshot
 			for (const key of partialKeys) {
-				object[key] ??= oldObject[key];
+				object[key] ??= latestSnapshot[key];
 			}
 		} else {
 			if (statements.doesExist.get(object) === undefined) {
@@ -330,10 +383,12 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _guild_id = :_guild_id AND _del
 			}
 		}
 
-		if (checkIfChanged && statements.isLatestSnapshotEqual.get(object)) {
+		const isLatestSnapshotEqual = statements.isEqualToSnapshot(latestSnapshot, object);
+
+		if (isLatestSnapshotEqual) {
 			return AddSnapshotResult.SameAsLatest;
 		} else {
-			if (checkIfChanged && BigInt(object._timestamp) <= (statements.getLatestTimestamp.get(object) as any)._timestamp) {
+			if (BigInt(object._timestamp) <= latestSnapshot._timestamp) {
 				throw RangeError("The added snapshot is not more recent than the latest one in the database but it's not equal to it.");
 			}
 			statements.copyLatestSnapshot.run(object);
@@ -658,7 +713,7 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _guild_id = :_guild_id AND _del
 			}
 			case RequestType.AddRoleSnapshot: {
 				const role = encodeObject(ObjectType.Role, req.role);
-				role._guild_id = req.guildID;
+				role._guild_id = BigInt(req.guildID);
 				response = addSnapshot(objectStatements.role, assignTiming(role, req.timing));
 				break;
 			}
@@ -741,7 +796,7 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _guild_id = :_guild_id AND _del
 
 				const channel = encodeObject(ObjectType.Channel, req.channel);
 				if (DT.isDirectChannel(req.channel)) {
-					channel.guild_id = 0;
+					channel.guild_id = 0n;
 				} else if (DT.isThread(req.channel)) {
 					channel.guild_id = null;
 				}
@@ -752,7 +807,7 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _guild_id = :_guild_id AND _del
 				if (req.channel.type === DT.ChannelType.GuildForum || req.channel.type === DT.ChannelType.GuildMedia) {
 					for (const jsonTag of req.channel.available_tags) {
 						const tag = encodeObject(ObjectType.ForumTag, jsonTag);
-						tag.channel_id = req.channel.id;
+						tag.channel_id = BigInt(req.channel.id);
 						tag.emoji = encodeEmojiProps(jsonTag);
 						tag._timestamp = timestamp;
 						addSnapshot(objectStatements.forumTag, tag);
@@ -810,6 +865,9 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _guild_id = :_guild_id AND _del
 				break;
 			}
 			case RequestType.AddMessageSnapshot: {
+				if (new Date(req.message.timestamp).getTime() !== Number(snowflakeToTimestamp(BigInt(req.message.id)))) {
+					throw new Error("The message's timestamp can't be derived from its ID.");
+				}
 				if (
 					objectStatements.channel.doesExist.get({ id: req.message.channel_id }) === undefined &&
 					objectStatements.thread.doesExist.get({ id: req.message.channel_id }) === undefined
@@ -908,16 +966,18 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _guild_id = :_guild_id AND _del
 						updateCachedChannel(req.message.channel_id);
 					}
 
-					msg.message_reference__message_id = req.message.message_reference.message_id ?? null;
+					msg.message_reference__message_id =
+						req.message.message_reference.message_id == null ? null :
+						BigInt(req.message.message_reference.message_id);
 					msg.message_reference__channel_id =
 						req.message.message_reference.channel_id == null ? null :
 						req.message.message_reference.channel_id === cachedChannelID ? 0n :
 						req.message.message_reference.channel_id === cachedChannelParentID ? 1n :
-						req.message.message_reference.channel_id;
+						BigInt(req.message.message_reference.channel_id);
 					msg.message_reference__guild_id =
 						req.message.message_reference.guild_id == null ? null :
 						req.message.message_reference.guild_id === cachedChannelGuildID ? 0n :
-						req.message.message_reference.guild_id;
+						BigInt(req.message.message_reference.guild_id);
 				}
 
 				response = addSnapshot(objectStatements.message, assignTiming(msg, req.timing));
@@ -1082,10 +1142,10 @@ SELECT 1 FROM latest_guild_emoji_snapshots WHERE _guild_id = :_guild_id AND _del
 
 			case RequestType.AddGuildEmojiSnapshot: {
 				const emoji = encodeObject(ObjectType.GuildEmoji, req.emoji);
-				emoji._guild_id = req.guildID;
+				emoji._guild_id = BigInt(req.guildID);
 				// user__id is stored once per object, not once per snapshot, so it's not checked when
 				// determining whether this should be a new snapshot.
-				emoji.user__id = req.emoji.user?.id;
+				emoji.user__id = req.emoji.user?.id == null ? null : BigInt(req.emoji.user.id);
 				response = addSnapshot(objectStatements.guildEmoji, assignTiming(emoji, req.timing));
 				break;
 			}

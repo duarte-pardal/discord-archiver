@@ -18,7 +18,7 @@ import { getTag } from "../discord-api/tag.js";
 import { CachedTextLikeChannel, CachedGuild, guilds, isGuildTextLikeChannel, CachedThread, CachedChannel, directChannels, cacheThread, cacheChannel, CachedPermissionOverwrites, updateGuildProperties } from "./cache.js";
 import { Account, AccountOptions, accounts, getLeastGatewayOccupiedAccount, getLeastRESTOccupiedAccount, OngoingDispatchHandling, OngoingExpressionUploaderRequest, OngoingMessageSync, OngoingThreadSync } from "./accounts.js";
 import { onArchiveMessages, onArchiveReactions, startProgressDisplay, stopProgressDisplay, updateProgressOutput } from "./progress.js";
-import { DownloadArguments, getCDNEmojiURL, getCDNHashURL, getDownloadTransactionFunction, normalizeURL } from "./files.js";
+import { DownloadArguments, getCDNEmojiURL, getCDNHashURL, getDownloadTransactionFunction } from "./files.js";
 import { mergeOptions } from "../util/http.js";
 import { setMaxListeners } from "node:events";
 import { FileStore } from "../db/file-store.js";
@@ -26,6 +26,7 @@ import { getGuildOptions, isFileStoreNeeded, MessageOptions, parseConfig, Parsed
 import { readFile } from "node:fs/promises";
 import { ZodError } from "zod";
 import { extractEmojis } from "../discord-api/message-content.js";
+import { normalizeURL } from "../discord-api/media-url-normalization.js";
 
 setMaxListeners(100);
 
@@ -677,7 +678,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 	}
 
 
-	async function archiveMemberSnapshots(cachedGuild: CachedGuild, members: DT.GuildMember[], timing: Timing, abortSignal: AbortSignal) {
+	async function archiveMemberSnapshots(cachedGuild: CachedGuild, members: DT.GuildMemberWithOptionalVoiceFields[], timing: Timing, abortSignal: AbortSignal) {
 		const files: DownloadArguments[] = [];
 		for (const member of members) {
 			if (cachedGuild.options.downloadAllMemberAvatars) {
@@ -1858,7 +1859,6 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 				}
 			});
 
-			// TODO: Abort without waiting for the rate limiter.
 			const restManager = new RestManager();
 			async function request<T>(endpoint: string, options: RestOptions): Promise<RequestResult<T>> {
 				const result = await restManager.request<T>(endpoint, options);

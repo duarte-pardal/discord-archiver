@@ -141,7 +141,7 @@ export type AddGuildMemberSnapshotRequest = {
 	type: RequestType.AddGuildMemberSnapshot;
 	timing: Timing;
 	guildID: string;
-	member: Omit<DT.GuildMember, "deaf" | "mute"> & Partial<DT.GuildMember>;
+	member: DT.GuildMemberWithOptionalVoiceFields;
 };
 export type AddGuildMemberLeaveRequest = {
 	type: RequestType.AddGuildMemberLeave;
@@ -313,27 +313,29 @@ export type SearchMessagesRequest = {
 	endDelimiter: string;
 };
 
-export type SingleRequest =
-	CommandRequest |
+export type AddSnapshotRequest =
 	AddUserSnapshotRequest |
-	SyncDeletedGuildSubObjectsRequest |
 	AddGuildSnapshotRequest |
 	AddRoleSnapshotRequest |
-	MarkRoleAsDeletedRequest |
-	SyncGuildMembersRequest |
 	AddGuildMemberSnapshotRequest |
 	AddGuildMemberLeaveRequest |
 	AddChannelSnapshotRequest |
-	MarkChannelAsDeletedRequest |
 	AddThreadSnapshotRequest |
-	MarkThreadAsDeletedRequest |
 	AddMessageSnapshotRequest |
+	AddGuildEmojiSnapshotRequest;
+export type SingleRequest =
+	AddSnapshotRequest |
+	CommandRequest |
+	SyncDeletedGuildSubObjectsRequest |
+	MarkRoleAsDeletedRequest |
+	SyncGuildMembersRequest |
+	MarkChannelAsDeletedRequest |
+	MarkThreadAsDeletedRequest |
 	MarkMessageAsDeletedRequest |
 	AddInitialReactionsRequest |
 	AddReactionPlacementRequest |
 	MarkReactionAsRemovedRequest |
 	MarkReactionAsRemovedBulkRequest |
-	AddGuildEmojiSnapshotRequest |
 	MarkGuildEmojiAsDeletedRequest |
 	UpdateEmojiUploadersRequest |
 	CheckForMissingEmojiUploadersRequest |
@@ -364,25 +366,17 @@ export type File = {
 
 export type SingleResponseFor<R extends SingleRequest> =
 	R extends CommandRequest ? void :
-	R extends AddUserSnapshotRequest ? AddSnapshotResult :
+	R extends AddSnapshotRequest ? AddSnapshotResult :
 	R extends SyncDeletedGuildSubObjectsRequest ? void :
-	R extends AddGuildSnapshotRequest ? AddSnapshotResult :
-	R extends AddRoleSnapshotRequest ? AddSnapshotResult :
 	R extends MarkRoleAsDeletedRequest ? boolean :
 	R extends SyncGuildMembersRequest ? void :
-	R extends AddGuildMemberSnapshotRequest ? AddSnapshotResult :
-	R extends AddGuildMemberLeaveRequest ? AddSnapshotResult :
-	R extends AddChannelSnapshotRequest ? AddSnapshotResult :
 	R extends MarkChannelAsDeletedRequest ? boolean :
-	R extends AddThreadSnapshotRequest ? AddSnapshotResult :
 	R extends MarkThreadAsDeletedRequest ? boolean :
-	R extends AddMessageSnapshotRequest ? AddSnapshotResult :
 	R extends MarkMessageAsDeletedRequest ? boolean :
 	R extends AddInitialReactionsRequest ? void :
 	R extends AddReactionPlacementRequest ? AddReactionResult :
 	R extends MarkReactionAsRemovedRequest ? boolean :
 	R extends MarkReactionAsRemovedBulkRequest ? number :
-	R extends AddGuildEmojiSnapshotRequest ? AddSnapshotResult :
 	R extends MarkGuildEmojiAsDeletedRequest ? boolean :
 	R extends UpdateEmojiUploadersRequest ? void :
 	R extends CheckForMissingEmojiUploadersRequest ? boolean:
@@ -397,9 +391,6 @@ export type ObjectSnapshotResponse<T> = {
 	/**
 	 * The timing at which the snapshot was taken, or `null` if the snapshot depicts the state of
 	 * the object upon creation.
-	 *
-	 * For messages, the `timestamp` property corresponds to `edited_timestamp` and the `realtime`
-	 * property is always set to `true`.
 	 */
 	timing: Timing | null;
 	/** The timing at which the object was deleted or found to be deleted. */

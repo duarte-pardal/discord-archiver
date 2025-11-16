@@ -337,6 +337,28 @@ export type MessageReference = {
 	guild_id?: string;
 };
 
+export type EmbedMedia = {
+	/** Source URL of media */
+	url?: string;
+	/** A proxied URL of the media */
+	proxy_url?: string;
+	/** Height of media */
+	height?: number;
+	/** Width of media */
+	width?: number;
+	/** The media's attachment flags */
+	flags?: number;
+	/** Alt text for the media */
+	description?: string;
+	/** The attachment's media type */
+	content_type?: string;
+	/** The content scan metadata for the media */
+	content_scan_metadata?: Record<string, unknown>;
+	/** The attachment placeholder protocol version */
+	placeholder_version?: number;
+	/** A low-resolution thumbhash of the media, to display before it is loaded */
+	placeholder?: string;
+};
 export type Embed = {
 	/** Title of embed */
 	title?: string;
@@ -368,38 +390,11 @@ export type Embed = {
 		proxy_icon_url?: string;
 	};
 	/** Image information */
-	image?: {
-		/** Source URL of image */
-		url: string;
-		/** A proxied URL of the image */
-		proxy_url?: string;
-		/** Height of image */
-		height: number;
-		/** Width of image */
-		width: number;
-	};
+	image?: EmbedMedia;
 	/** Thumbnail information */
-	thumbnail?: {
-		/** Source URL of thumbnail */
-		url: string;
-		/** A proxied URL of the thumbnail */
-		proxy_url?: string;
-		/** Height of thumbnail */
-		height: number;
-		/** Width of thumbnail */
-		width: number;
-	};
+	thumbnail?: EmbedMedia;
 	/** Video information */
-	video?: {
-		/** Source URL of video */
-		url?: string;
-		/** A proxied URL of the video */
-		proxy_url?: string;
-		/** Height of video */
-		height: number;
-		/** Width of video */
-		width: number;
-	};
+	video?: EmbedMedia;
 	/** Provider information */
 	provider?: {
 		/** Name of provider */
@@ -427,6 +422,12 @@ export type Embed = {
 		/** Whether or not this field should display inline */
 		inline?: boolean;
 	}[];
+	/** The ID of the message this embed was generated from */
+	reference_id?: string;
+	/** The version of the explicit content scan filter this embed was scanned with */
+	content_scan_version?: number;
+	/** The embed's flags */
+	flags?: number;
 };
 
 export type MessageInteractionMetadata = {
@@ -1301,6 +1302,8 @@ export type GuildMember = {
 	unusual_dm_activity_until?: string | null;
 };
 
+export type GuildMemberWithOptionalVoiceFields = Omit<GuildMember, "deaf" | "mute"> & Partial<GuildMember>;
+
 export type PartialUserWithMemberField = PartialUser & { member: GuildMember };
 
 //#endregion
@@ -1685,7 +1688,7 @@ export type GatewayGuildMemberRemoveDispatchPayload = GatewayGenericDispatchPayl
 	guild_id: string;
 	user: PartialUser;
 }>;
-export type GatewayGuildMemberUpdateDispatchPayload = GatewayGenericDispatchPayload<"GUILD_MEMBER_UPDATE", GuildMember & {
+export type GatewayGuildMemberUpdateDispatchPayload = GatewayGenericDispatchPayload<"GUILD_MEMBER_UPDATE", GuildMemberWithOptionalVoiceFields & {
 	guild_id: string;
 }>;
 export type GatewayGuildMembersChunkPayload = GatewayGenericDispatchPayload<"GUILD_MEMBERS_CHUNK", {

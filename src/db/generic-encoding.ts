@@ -505,6 +505,9 @@ export function decodeImageHash(encodedHash: Uint8Array | string): string {
 }
 
 export function encodeSnowflakeArray(array: string[]): Uint8Array {
+	if (!(array instanceof Array) || array.some(v => typeof v !== "string")) {
+		throw new TypeError("Expected an array of strings.");
+	}
 	const dv = new DataView(new ArrayBuffer(array.length * 8));
 	for (let i = 0; i < array.length; i++)
 		dv.setBigUint64(i * 8, BigInt(array[i]));
@@ -603,27 +606,39 @@ function encodeValue(type: ValueType, nullValue: NullValue | undefined, value: a
 
 	switch (type) {
 		case ValueType.String:
+			if (typeof value !== "string") throw new TypeError("Expected a string.");
+			return value;
 		case ValueType.BigInteger:
+			if (typeof value !== "string") throw new TypeError("Expected a string.");
+			return BigInt(value);
 		case ValueType.Float:
+			if (typeof value !== "number") throw new TypeError("Expected a float.");
 			return value;
 		case ValueType.Integer:
+			if (typeof value !== "number") throw new TypeError("Expected an integer.");
+			return BigInt(value);
 		case ValueType.Boolean:
 		case ValueType.StrictBoolean:
+			if (value != null && typeof value !== "boolean") throw new TypeError("Expected a boolean.");
 			return value == null ? 0n : BigInt(value);
 		case ValueType.Base64:
+			if (typeof value !== "string") throw new TypeError("Expected a string.");
 			return Buffer.from(value, "base64");
 		case ValueType.ImageHash:
+			if (typeof value !== "string") throw new TypeError("Expected a string.");
 			return encodeImageHash(value);
 		case ValueType.BigIntegerArray:
 			return encodeSnowflakeArray(value);
 		case ValueType.Timestamp:
-			return new Date(value).getTime();
+			if (typeof value !== "string") throw new TypeError("Expected a string.");
+			return BigInt(new Date(value).getTime());
 		case ValueType.Emoji:
 			return encodeEmojiProps(value);
 		case ValueType.JSON:
 			return JSON.stringify(value);
 		case ValueType.Null:
-			return 0;
+			if (value !== null) throw new TypeError("Expected `null`.");
+			return 0n;
 	}
 }
 function decodeValue(type: ValueType, nullValue: NullValue | undefined, value: any): unknown {
@@ -713,7 +728,9 @@ function encodeObjectRecursive(objectType: ObjectType, sqlArguments: any, prefix
 }
 export function encodeObject(objectType: ObjectType, object: any, partial = false): any {
 	const sqlArguments: any = {};
-	let extra: string | null = JSON.stringify(encodeObjectRecursive(objectType, sqlArguments, "", processedSchemas[objectType], object, partial));
+	const decodedExtra = encodeObjectRecursive(objectType, sqlArguments, "", processedSchemas[objectType], object, partial);
+	sqlArguments._decoded_extra = decodedExtra;
+	let extra: string | null = JSON.stringify(decodedExtra);
 	if (extra === "{}") {
 		extra = null;
 	}

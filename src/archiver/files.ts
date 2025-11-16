@@ -240,15 +240,6 @@ export function getDownloadTransactionFunction(
 	};
 }
 
-function stripQuery(url: string) {
-	const i = url.indexOf("?");
-	return i === -1 ? url : url.slice(0, i);
-}
-export function normalizeURL(url: string): string {
-	if (url.startsWith("https://cdn.discordapp.com/attachments/")) url = stripQuery(url);
-	return url;
-}
-
 export function getCDNHashURL(prefix: string, hash: string, imageOptions: ImageOptions, animatedImageOptions: AnimatedImageOptions = imageOptions): string {
 	const options = hash.startsWith("a_") ? animatedImageOptions : imageOptions;
 	return `https://cdn.discordapp.com${prefix}/${hash}.${options.format}?${options.queryParams}`;

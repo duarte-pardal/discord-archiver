@@ -1,12 +1,40 @@
 import test, { TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { getRequestHandler, RequestHandler } from "./request-handler.js";
-import { AddGuildMemberSnapshotRequest, AddGuildMemberLeaveRequest, AddSnapshotResult, GetChannelsRequest, GetForumTagsRequest, GetGuildEmojisRequest, GetGuildMembersRequest, GetGuildsRequest, GetMessagesRequest, GetRolesRequest, GetThreadsRequest, IteratorResponseFor, MarkMessageAsDeletedRequest, RequestType, SyncGuildMembersRequest, Timing, SetLastSyncedMessageIDRequest, GetLastSyncedMessageIDRequest, AddInitialReactionsRequest, AddReactionPlacementRequest, GetReactionsHistoryRequest as GetReactionHistoryRequest, MarkReactionAsRemovedRequest, MarkReactionAsRemovedBulkRequest, AddReactionResult } from "./types.js";
-import { Attachment, ChannelType, GatewayGuildCreateDispatchPayload, GuildMember, MemberFlag, Message, PartialEmoji, PartialUser, ReactionType, User } from "../discord-api/types.js";
+import { AddGuildMemberSnapshotRequest, AddGuildMemberLeaveRequest, AddSnapshotResult, GetChannelsRequest, GetForumTagsRequest, GetGuildEmojisRequest, GetGuildMembersRequest, GetGuildsRequest, GetMessagesRequest, GetRolesRequest, GetThreadsRequest, IteratorResponseFor, MarkMessageAsDeletedRequest, RequestType, SyncGuildMembersRequest, Timing, SetLastSyncedMessageIDRequest, GetLastSyncedMessageIDRequest, AddInitialReactionsRequest, AddReactionPlacementRequest, GetReactionsHistoryRequest as GetReactionHistoryRequest, MarkReactionAsRemovedRequest, MarkReactionAsRemovedBulkRequest, AddReactionResult, AddMessageSnapshotRequest, AddSnapshotRequest } from "./types.js";
+import { Attachment, ChannelType, GatewayGuildCreateDispatchPayload, GuildMember, GuildMemberWithOptionalVoiceFields, MemberFlag, Message, PartialEmoji, PartialUser, ReactionType, User } from "../discord-api/types.js";
 import { parseArgs } from "node:util";
 import { unlinkSync } from "node:fs";
 import { Logger } from "../util/log.js";
 import { snowflakeToTimestamp } from "../discord-api/snowflake.js";
+
+function isoTimestampFromID(id: string | bigint) {
+	return new Date(Number(snowflakeToTimestamp(BigInt(id)))).toISOString();
+}
+
+let fakeSnowflake = 2000000000000000000n;
+function generateSnowflake(): string {
+	return String(fakeSnowflake++);
+}
+function generateUser(): PartialUser {
+	const id = generateSnowflake();
+	const user = {
+		avatar: null,
+		avatar_decoration_data: null,
+		bot: false,
+		clan: null,
+		collectibles: null,
+		discriminator: "0",
+		display_name: "Fake user",
+		display_name_styles: null,
+		global_name: "Fake user",
+		id,
+		primary_guild: null,
+		public_flags: 0,
+		username: `fake user ${id}`,
+	};
+	return user;
+}
 
 type RecursiveExtension<T> =
 	T extends (infer ArrayMemberType)[] ? RecursiveExtension<ArrayMemberType>[] :
@@ -512,27 +540,6 @@ const guild: RecursiveExtension<GatewayGuildCreateDispatchPayload["d"]> = {
 	system_channel_id: "1367557310872031334",
 };
 
-let fakeUserCounter = 0n;
-function getFakeUser(): PartialUser {
-	const user = {
-		avatar: null,
-		avatar_decoration_data: null,
-		bot: false,
-		clan: null,
-		collectibles: null,
-		discriminator: "0",
-		display_name: "Fake user",
-		display_name_styles: null,
-		global_name: "Fake user",
-		id: String(2000000000000000000n + fakeUserCounter),
-		primary_guild: null,
-		public_flags: 0,
-		username: `fake user ${fakeUserCounter}`,
-	};
-	fakeUserCounter++;
-	return user;
-}
-
 // User objects as returned in the author field of messages.
 const users: RecursiveExtension<Message["author"]>[] = [
 	{
@@ -574,7 +581,7 @@ const users: RecursiveExtension<Message["author"]>[] = [
 
 type GuildMemberEntry = {
 	options: TestOptions;
-	data: RecursiveExtension<Omit<GuildMember, "deaf" | "mute">>;
+	data: RecursiveExtension<GuildMemberWithOptionalVoiceFields>;
 };
 const guildMembers: GuildMemberEntry[] = [
 	{
@@ -621,7 +628,7 @@ const guildMembers: GuildMemberEntry[] = [
 			pending: true,
 			premium_since: null,
 			roles: [],
-			user: getFakeUser(),
+			user: generateUser(),
 		},
 	},
 	{
@@ -636,7 +643,7 @@ const guildMembers: GuildMemberEntry[] = [
 			pending: false,
 			premium_since: null,
 			roles: [],
-			user: getFakeUser(),
+			user: generateUser(),
 		},
 	},
 	{
@@ -664,7 +671,7 @@ const guildMembers: GuildMemberEntry[] = [
 				display_name: "User who boosted the server",
 				display_name_styles: null,
 				global_name: "User who boosted the server",
-				id: "2100000000000000002",
+				id: generateSnowflake(),
 				primary_guild: null,
 				public_flags: 64,
 				username: "special fake user 2",
@@ -2748,127 +2755,129 @@ const messages: MessageEntry[] = [
 	},
 	{
 		options: { name: "message from user with decorations" },
-		data: {
-			type: 0,
-			content: "Look at my bling!",
-			mentions: [],
-			mention_roles: [],
-			attachments: [],
-			embeds: [],
-			timestamp: "2030-04-06T03:18:49.785000+00:00",
-			edited_timestamp: null,
-			flags: 0,
-			components: [],
-			id: "2020000000000000000",
-			channel_id: "1367557310872031334",
-			author: {
-				id: "2100000000000000000",
-				username: "special fake user 0",
-				avatar: "00000000000000000000000000000000",
-				discriminator: "0",
-				public_flags: 4194560,
-				flags: 4194560,
-				banner: null,
-				accent_color: null,
-				global_name: "User with fancy decorations",
-				avatar_decoration_data: {
-					asset: "a_44d96dca4f514777925f23d841f36fac",
-					sku_id: "1349486948942745695",
-					expires_at: null,
-				},
-				collectibles: {
-					nameplate: {
-						sku_id: "1349849614198505602",
-						asset: "nameplates/nameplates/twilight/",
-						label: "COLLECTIBLES_NAMEPLATES_TWILIGHT_A11Y",
-						palette: "cobalt",
+		data: (() => {
+			const id = generateSnowflake();
+			const clan = {
+				identity_guild_id: generateSnowflake(),
+				identity_enabled: true,
+				tag: "FAKE",
+				badge: "00000000000000000000000000000000",
+			};
+			return {
+				type: 0,
+				content: "Look at my bling!",
+				mentions: [],
+				mention_roles: [],
+				attachments: [],
+				embeds: [],
+				timestamp: isoTimestampFromID(id),
+				edited_timestamp: null,
+				flags: 0,
+				components: [],
+				id,
+				channel_id: "1367557310872031334",
+				author: {
+					id: generateSnowflake(),
+					username: "fake user with decorations",
+					avatar: "00000000000000000000000000000000",
+					discriminator: "0",
+					public_flags: 4194560,
+					flags: 4194560,
+					banner: null,
+					accent_color: null,
+					global_name: "User with fancy decorations",
+					avatar_decoration_data: {
+						asset: "a_44d96dca4f514777925f23d841f36fac",
+						sku_id: "1349486948942745695",
+						expires_at: null,
 					},
+					collectibles: {
+						nameplate: {
+							sku_id: "1349849614198505602",
+							asset: "nameplates/nameplates/twilight/",
+							label: "COLLECTIBLES_NAMEPLATES_TWILIGHT_A11Y",
+							palette: "cobalt",
+						},
+					},
+					display_name_styles: {
+						font_id: 3,
+						effect_id: 2,
+						colors: [
+							1234567,
+							7654321,
+						],
+					},
+					banner_color: null,
+					clan,
+					primary_guild: clan,
 				},
-				display_name_styles: {
-					font_id: 3,
-					effect_id: 2,
-					colors: [
-						1234567,
-						7654321,
-					],
-				},
-				banner_color: null,
-				clan: {
-					identity_guild_id: "2010000000000000000",
-					identity_enabled: true,
-					tag: "FAKE",
-					badge: "00000000000000000000000000000000",
-				},
-				primary_guild: {
-					identity_guild_id: "2010000000000000000",
-					identity_enabled: true,
-					tag: "FAKE",
-					badge: "00000000000000000000000000000000",
-				},
-			},
-			pinned: true,
-			mention_everyone: false,
-			tts: false,
-		},
+				pinned: true,
+				mention_everyone: false,
+				tts: false,
+			};
+		})(),
 	},
 	{
 		options: { name: "message from user with unknown properties" },
-		data: {
-			type: 0,
-			content: "Pinned message",
-			mentions: [],
-			mention_roles: [],
-			attachments: [],
-			embeds: [],
-			timestamp: "2030-04-06T03:18:49.785000+00:00",
-			edited_timestamp: "2025-05-01T18:26:17.333000+00:00",
-			flags: 0,
-			components: [],
-			id: "2020000000000000001",
-			channel_id: "1367557310872031334",
-			author: {
-				id: "2100000000000000001",
-				username: "special fake user 1",
-				avatar: "00000000000000000000000000000000",
-				discriminator: "0",
-				public_flags: 4194560,
-				flags: 4194560,
-				banner: null,
-				accent_color: null,
-				global_name: "User with unknown properties",
-				avatar_decoration_data: null,
-				collectibles: {
-					nameplate: {
-						sku_id: "1349849614198505602",
-						asset: "nameplates/nameplates/twilight/",
-						label: "COLLECTIBLES_NAMEPLATES_TWILIGHT_A11Y",
-						palette: "cobalt",
-						"what?": true,
+		data: (() => {
+			const id = generateSnowflake();
+			return {
+				type: 0,
+				content: "Pinned message",
+				mentions: [],
+				mention_roles: [],
+				attachments: [],
+				embeds: [],
+				timestamp: isoTimestampFromID(id),
+				edited_timestamp: "2025-05-01T18:26:17.333000+00:00",
+				flags: 0,
+				components: [],
+				id,
+				channel_id: "1367557310872031334",
+				author: {
+					id: generateSnowflake(),
+					username: "fake user with unknown properties",
+					avatar: "invalid image hash",
+					discriminator: "0",
+					public_flags: 4194560,
+					flags: 4194560,
+					banner: null,
+					accent_color: null,
+					global_name: "User with unknown properties",
+					avatar_decoration_data: null,
+					collectibles: {
+						nameplate: {
+							sku_id: "1349849614198505602",
+							asset: "nameplates/nameplates/twilight/",
+							label: "COLLECTIBLES_NAMEPLATES_TWILIGHT_A11Y",
+							palette: "cobalt",
+							"what?": true,
+						},
+						unknown_collectible: {},
 					},
-					unknown_collectible: {},
+					display_name_styles: null,
+					banner_color: null,
+					clan: {
+						identity_guild_id: null,
+						identity_enabled: null,
+						tag: null,
+						badge: null,
+						unknown_property: 123,
+					},
+					primary_guild: {
+						identity_guild_id: null,
+						identity_enabled: null,
+						tag: null,
+						badge: null,
+						unknown_property: 123,
+					},
+					unknown_property: [],
 				},
-				display_name_styles: null,
-				banner_color: null,
-				clan: {
-					identity_guild_id: null,
-					identity_enabled: null,
-					tag: null,
-					badge: null,
-					unknown_property: 123,
-				},
-				primary_guild: {
-					identity_guild_id: null,
-					identity_enabled: null,
-					tag: null,
-					badge: null,
-					unknown_property: 123,
-				},
-				unknown_property: [],
-			},
-			pinned: true,
-			mention_everyone: false,
-			tts: false,
-		},
+				pinned: true,
+				mention_everyone: false,
+				tts: false,
+			};
+		})(),
 	},
 	{
 		options: { name: "follow add announcement" },
@@ -3311,6 +3320,108 @@ const messages: MessageEntry[] = [
 			tts: false,
 		},
 	},
+	{
+		options: { name: "embedded video from attachment" },
+		data: {
+			type: 0,
+			content: "Embedded video from attachment\nhttps://cdn.discordapp.com/attachments/1367557310872031334/1408914540024037447/video.mp4?ex=6916ebaa&is=69159a2a&hm=6d68576998e80838a8aa8ff1bbd888034d948ec9d9a054893744a1b55b49539d&",
+			mentions: [],
+			mention_roles: [],
+			attachments: [],
+			embeds: [
+				{
+					type: "video",
+					url: "https://cdn.discordapp.com/attachments/1367557310872031334/1408914540024037447/video.mp4?ex=6916ebaa&is=69159a2a&hm=6d68576998e80838a8aa8ff1bbd888034d948ec9d9a054893744a1b55b49539d&",
+					video: {
+						url: "https://cdn.discordapp.com/attachments/1367557310872031334/1408914540024037447/video.mp4?ex=6916ebaa&is=69159a2a&hm=6d68576998e80838a8aa8ff1bbd888034d948ec9d9a054893744a1b55b49539d&",
+						proxy_url: "https://media.discordapp.net/attachments/1367557310872031334/1408914540024037447/video.mp4?ex=6916ebaa&is=69159a2a&hm=6d68576998e80838a8aa8ff1bbd888034d948ec9d9a054893744a1b55b49539d&",
+						width: 320,
+						height: 240,
+						content_type: "video/mp4",
+						placeholder: "3/cNLYZ1cIB3Z3dHaHiId4AouK+I",
+						placeholder_version: 1,
+						flags: 0,
+					},
+					content_scan_version: 2,
+				},
+			],
+			timestamp: "2025-11-13T11:47:53.322000+00:00",
+			edited_timestamp: null,
+			flags: 0,
+			components: [],
+			id: "1438495584590762066",
+			channel_id: "1367557310872031334",
+			author: {
+				id: "1367556342314827907",
+				username: "archivertestserverowner_33925",
+				avatar: null,
+				discriminator: "0",
+				public_flags: 0,
+				flags: 0,
+				banner: null,
+				accent_color: null,
+				global_name: "Archiver Test Server Owner",
+				avatar_decoration_data: null,
+				collectibles: null,
+				display_name_styles: null,
+				banner_color: null,
+				clan: null,
+				primary_guild: null,
+			},
+			pinned: false,
+			mention_everyone: false,
+			tts: false,
+		},
+	},
+	{
+		options: { name: "voice message" },
+		data: {
+			type: 0,
+			content: "",
+			mentions: [],
+			mention_roles: [],
+			attachments: [
+				{
+					id: "1439050325138079844",
+					filename: "voice-message.ogg",
+					size: 10725,
+					url: "https://cdn.discordapp.com/attachments/1367557310872031334/1439050325138079844/voice-message.ogg?ex=69191b8d&is=6917ca0d&hm=e07910cca1de9a399ab472558aa2cc2c53f8f2ee5a58bf314a2c9baa3d884b9f&",
+					proxy_url: "https://media.discordapp.net/attachments/1367557310872031334/1439050325138079844/voice-message.ogg?ex=69191b8d&is=6917ca0d&hm=e07910cca1de9a399ab472558aa2cc2c53f8f2ee5a58bf314a2c9baa3d884b9f&",
+					duration_secs: 2.9200000762939453,
+					waveform: "ZgAAYxFzEABXen97CC8pBQAAAACDmIJkZQAAKA==",
+					content_type: "audio/ogg",
+					content_scan_version: 0,
+				},
+			],
+			embeds: [],
+			timestamp: "2025-11-15T00:32:13.838000+00:00",
+			edited_timestamp: null,
+			flags: 8192,
+			components: [],
+			id: "1439050325402063080",
+			channel_id: "1367557310872031334",
+			author: {
+				id: "1367556342314827907",
+				username: "archivertestserverowner_33925",
+				avatar: null,
+				discriminator: "0",
+				public_flags: 0,
+				flags: 0,
+				banner: null,
+				accent_color: null,
+				global_name: "Archiver Test Server Owner",
+				avatar_decoration_data: null,
+				collectibles: null,
+				display_name_styles: null,
+				banner_color: null,
+				clan: null,
+				primary_guild: null,
+			},
+			pinned: false,
+			mention_everyone: false,
+			tts: false,
+		},
+	},
 ];
 
 const messageEdits: {
@@ -3567,62 +3678,92 @@ const guildSnapshotTiming = {
 	realtime: false,
 };
 
-assert.equal(request({
-	type: RequestType.AddGuildSnapshot,
-	guild: guild,
-	timing: guildSnapshotTiming,
-}), AddSnapshotResult.AddedFirstSnapshot);
+await test("adding snapshots works", async (t) => {
+	function addSnapshot(req: AddSnapshotRequest) {
+		assert.equal(request(req), AddSnapshotResult.AddedFirstSnapshot);
+		assert.equal(request(req), AddSnapshotResult.SameAsLatest);
+	}
 
-for (const emoji of guild.emojis) {
-	assert.equal(request({
-		type: RequestType.AddGuildEmojiSnapshot,
-		emoji,
-		guildID: guild.id,
-		timing: guildSnapshotTiming,
-	}), AddSnapshotResult.AddedFirstSnapshot);
-}
-
-for (const role of guild.roles) {
-	assert.equal(request({
-		type: RequestType.AddRoleSnapshot,
-		role,
-		guildID: guild.id,
-		timing: guildSnapshotTiming,
-	}), AddSnapshotResult.AddedFirstSnapshot);
-}
-for (const { data: member } of guildMembers) {
-	assert.equal(request({
-		type: RequestType.AddGuildMemberSnapshot,
-		member,
-		partial: false,
-		timing: guildSnapshotTiming,
-		guildID: guild.id,
-	}), AddSnapshotResult.AddedFirstSnapshot);
-}
-for (const channel of guild.channels) {
-	assert.equal(request({
-		type: RequestType.AddChannelSnapshot,
-		channel: Object.assign(channel, { guild_id: guild.id }),
-		timing: guildSnapshotTiming,
-	}), AddSnapshotResult.AddedFirstSnapshot);
-}
-for (const thread of guild.threads) {
-	assert.equal(request({
-		type: RequestType.AddThreadSnapshot,
-		thread: Object.assign(thread, { guild_id: guild.id }),
-		timing: guildSnapshotTiming,
-	}), AddSnapshotResult.AddedFirstSnapshot);
-}
-
-for (const { data: message } of messages) {
-	const newLocal = request({
-		type: RequestType.AddMessageSnapshot,
-		message,
-		timing: guildSnapshotTiming,
-		timestamp: guildSnapshotTiming.timestamp,
+	await t.test("adding guild snapshots works", async (t) => {
+		await t.test("community server", () => {
+			addSnapshot({
+				type: RequestType.AddGuildSnapshot,
+				guild: guild,
+				timing: guildSnapshotTiming,
+			});
+		});
 	});
-	assert.equal(newLocal, AddSnapshotResult.AddedFirstSnapshot);
-}
+	await t.test("adding emoji snapshots works", async (t) => {
+		for (const emoji of guild.emojis) {
+			await t.test(emoji.name, () => {
+				addSnapshot({
+					type: RequestType.AddGuildEmojiSnapshot,
+					emoji,
+					guildID: guild.id,
+					timing: guildSnapshotTiming,
+				});
+			});
+		}
+	});
+	await t.test("adding role snapshots works", async (t) => {
+		for (const role of guild.roles) {
+			await t.test(role.name, () => {
+				addSnapshot({
+					type: RequestType.AddRoleSnapshot,
+					role,
+					guildID: guild.id,
+					timing: guildSnapshotTiming,
+				});
+			});
+		}
+	});
+	await t.test("adding guild member snapshots works", async (t) => {
+		for (const entry of guildMembers) {
+			await t.test(entry.options, () => {
+				addSnapshot({
+					type: RequestType.AddGuildMemberSnapshot,
+					member: entry.data,
+					timing: guildSnapshotTiming,
+					guildID: guild.id,
+				});
+			});
+		}
+	});
+	await t.test("adding channel snapshots works", async (t) => {
+		for (const channel of guild.channels) {
+			await t.test(channel.name, () => {
+				addSnapshot({
+					type: RequestType.AddChannelSnapshot,
+					channel: Object.assign(channel, { guild_id: guild.id }),
+					timing: guildSnapshotTiming,
+				});
+			});
+		}
+	});
+	await t.test("adding thread snapshots works", async (t) => {
+		for (const thread of guild.threads) {
+			await t.test(thread.name, () => {
+				addSnapshot({
+					type: RequestType.AddThreadSnapshot,
+					thread: Object.assign(thread, { guild_id: guild.id }),
+					timing: guildSnapshotTiming,
+				});
+			});
+		}
+	});
+	await t.test("adding message snapshots works", async (t) => {
+		for (const entry of messages) {
+			await t.test(entry.options, () => {
+				addSnapshot({
+					type: RequestType.AddMessageSnapshot,
+					message: entry.data,
+					timing: guildSnapshotTiming,
+					timestamp: guildSnapshotTiming.timestamp,
+				});
+			});
+		}
+	});
+});
 
 function stripGuild(guild: Partial<GatewayGuildCreateDispatchPayload["d"]>) {
 	delete guild.emojis;
@@ -3820,143 +3961,145 @@ async function compareLatestSnapshots<Snapshot, Entry>(
 	});
 }
 
-await Promise.all([
-	test("latest guild snapshots match", (t) => compareLatestSnapshots(
-		t,
-		[...request({
-			type: RequestType.GetGuilds,
-		} satisfies GetGuildsRequest)],
-		[guild],
-		async (original, snapshots) => {
-			const snapshot = snapshots.find(s => s.data.id === original.id);
-			assert(snapshot !== undefined, "guild wasn't archived");
-			stripGuild(snapshot.data);
-			return { expectedObject: stripGuild(structuredClone(original)), snapshot };
-		},
-		_ => ({ name: "community server" }),
-	)),
-	test("latest member snapshots match", (t) => compareLatestSnapshots(
-		t,
-		[...request({
-			type: RequestType.GetGuildMembers,
-			guildID: guild.id,
-		} satisfies GetGuildMembersRequest)],
-		guildMembers,
-		async (original, snapshots) => {
-			const snapshot = snapshots.find(s => s.data.user.id === original.data.user.id);
-			assert(snapshot !== undefined, "guild member wasn't archived");
-			return { expectedObject: stripGuildMember(structuredClone(original.data)), snapshot };
-		},
-		entry => entry.options,
-	)),
-	test("latest channel snapshots match", (t) => compareLatestSnapshots(
-		t,
-		[...request({
-			type: RequestType.GetChannels,
-			guildID: guild.id,
-		} satisfies GetChannelsRequest)],
-		guild.channels,
-		async (channel, snapshots, t) => {
-			const snapshot = snapshots.find(s => s.data.id === channel.id);
-			assert(snapshot !== undefined, "channel wasn't archived");
-			if (channel.available_tags != null) {
-				await t.test("latest forum tags snapshots match", (t) => compareLatestSnapshots(
-					t,
-					[...request({
-						type: RequestType.GetForumTags,
-						channelID: channel.id,
-					} satisfies GetForumTagsRequest)],
-					channel.available_tags as Iterable<unknown>,
-					async (tag: any, snapshots) => {
-						const snapshot = snapshots.find(s => s.data.id === tag.id);
-						assert(snapshot !== undefined, "forum tag wasn't archived");
-						return { expectedObject: tag, snapshot };
-					},
-					tag => ({ name: tag.name }),
-				));
-
-				channel = structuredClone(channel);
-				delete channel.available_tags;
-			}
-			return { expectedObject: channel, snapshot };
-		},
-		channel => ({ name: channel.name }),
-	)),
-	test("latest thread snapshots match", (t) => compareLatestSnapshots(
-		t,
-		[...request({
-			type: RequestType.GetThreads,
-			parentID: "1367557310872031334",
-		} satisfies GetThreadsRequest)],
-		guild.threads,
-		async (original, snapshots) => {
-			const snapshot = snapshots.find(s => s.data.id === original.id);
-			assert(snapshot !== undefined, "thread wasn't archived");
-			return { expectedObject: original, snapshot };
-		},
-		thread => ({ name: thread.name }),
-	)),
-	test("latest message snapshots match", async (t) => {
-		const channelsWithMessages: string[] = [...new Set(messages.map(entry => entry.data.channel_id))];
-		await compareLatestSnapshots(
+await test("latest snapshots match", async (t) => {
+	await Promise.all([
+		t.test("latest guild snapshots match", (t) => compareLatestSnapshots(
 			t,
-			channelsWithMessages
-				.map(channelID => [...request({
-					type: RequestType.GetMessages,
-					channelID,
-				} satisfies GetMessagesRequest)])
-				.flat(),
-			messages,
+			[...request({
+				type: RequestType.GetGuilds,
+			} satisfies GetGuildsRequest)],
+			[guild],
 			async (original, snapshots) => {
-				const snapshot = snapshots.find(s => s.data.id === original.data.id);
-				assert(snapshot !== undefined, "message wasn't archived");
-				stripMessage(snapshot.data);
-				return { expectedObject: original.data, snapshot };
+				const snapshot = snapshots.find(s => s.data.id === original.id);
+				assert(snapshot !== undefined, "guild wasn't archived");
+				stripGuild(snapshot.data);
+				return { expectedObject: stripGuild(structuredClone(original)), snapshot };
+			},
+			_ => ({ name: "community server" }),
+		)),
+		t.test("latest member snapshots match", (t) => compareLatestSnapshots(
+			t,
+			[...request({
+				type: RequestType.GetGuildMembers,
+				guildID: guild.id,
+			} satisfies GetGuildMembersRequest)],
+			guildMembers,
+			async (original, snapshots) => {
+				const snapshot = snapshots.find(s => s.data.user.id === original.data.user.id);
+				assert(snapshot !== undefined, "guild member wasn't archived");
+				return { expectedObject: stripGuildMember(structuredClone(original.data)), snapshot };
 			},
 			entry => entry.options,
-		);
-	}),
-	test("latest role snapshots match", (t) => compareLatestSnapshots(
-		t,
-		[...request({
-			type: RequestType.GetRoles,
-			guildID: guild.id,
-		} satisfies GetRolesRequest)],
-		guild.roles,
-		async (original, snapshots) => {
-			const snapshot = snapshots.find(s => s.data.id === original.id);
-			assert(snapshot !== undefined, "role wasn't archived");
-			return { expectedObject: original, snapshot };
-		},
-		role => ({ name: role.name }),
-	)),
-	test("latest emoji snapshots match", (t) => compareLatestSnapshots(
-		t,
-		[...request({
-			type: RequestType.GetGuildEmojis,
-			guildID: guild.id,
-		} satisfies GetGuildEmojisRequest)],
-		guild.emojis,
-		async (original, snapshots) => {
-			const snapshot = snapshots.find(s => s.data.id === original.id);
-			assert(snapshot !== undefined, "emoji wasn't archived");
-			return {
-				expectedObject: original,
-				snapshot,
-			};
-		},
-		emoji => ({ name: emoji.name }),
-	)),
-	test("emoji uploaders are missing", () => {
-		assert.equal(
-			request({
-				type: RequestType.CheckForMissingEmojiUploaders,
+		)),
+		t.test("latest channel snapshots match", (t) => compareLatestSnapshots(
+			t,
+			[...request({
+				type: RequestType.GetChannels,
 				guildID: guild.id,
-			}),
-			true,
-		);
-	}),
-]);
+			} satisfies GetChannelsRequest)],
+			guild.channels,
+			async (channel, snapshots, t) => {
+				const snapshot = snapshots.find(s => s.data.id === channel.id);
+				assert(snapshot !== undefined, "channel wasn't archived");
+				if (channel.available_tags != null) {
+					await t.test("latest forum tags snapshots match", (t) => compareLatestSnapshots(
+						t,
+						[...request({
+							type: RequestType.GetForumTags,
+							channelID: channel.id,
+						} satisfies GetForumTagsRequest)],
+						channel.available_tags as Iterable<unknown>,
+						async (tag: any, snapshots) => {
+							const snapshot = snapshots.find(s => s.data.id === tag.id);
+							assert(snapshot !== undefined, "forum tag wasn't archived");
+							return { expectedObject: tag, snapshot };
+						},
+						tag => ({ name: tag.name }),
+					));
+
+					channel = structuredClone(channel);
+					delete channel.available_tags;
+				}
+				return { expectedObject: channel, snapshot };
+			},
+			channel => ({ name: channel.name }),
+		)),
+		t.test("latest thread snapshots match", (t) => compareLatestSnapshots(
+			t,
+			[...request({
+				type: RequestType.GetThreads,
+				parentID: "1367557310872031334",
+			} satisfies GetThreadsRequest)],
+			guild.threads,
+			async (original, snapshots) => {
+				const snapshot = snapshots.find(s => s.data.id === original.id);
+				assert(snapshot !== undefined, "thread wasn't archived");
+				return { expectedObject: original, snapshot };
+			},
+			thread => ({ name: thread.name }),
+		)),
+		t.test("latest message snapshots match", async (t) => {
+			const channelsWithMessages: string[] = [...new Set(messages.map(entry => entry.data.channel_id))];
+			await compareLatestSnapshots(
+				t,
+				channelsWithMessages
+					.map(channelID => [...request({
+						type: RequestType.GetMessages,
+						channelID,
+					} satisfies GetMessagesRequest)])
+					.flat(),
+				messages,
+				async (original, snapshots) => {
+					const snapshot = snapshots.find(s => s.data.id === original.data.id);
+					assert(snapshot !== undefined, "message wasn't archived");
+					stripMessage(snapshot.data);
+					return { expectedObject: original.data, snapshot };
+				},
+				entry => entry.options,
+			);
+		}),
+		t.test("latest role snapshots match", (t) => compareLatestSnapshots(
+			t,
+			[...request({
+				type: RequestType.GetRoles,
+				guildID: guild.id,
+			} satisfies GetRolesRequest)],
+			guild.roles,
+			async (original, snapshots) => {
+				const snapshot = snapshots.find(s => s.data.id === original.id);
+				assert(snapshot !== undefined, "role wasn't archived");
+				return { expectedObject: original, snapshot };
+			},
+			role => ({ name: role.name }),
+		)),
+		t.test("latest emoji snapshots match", (t) => compareLatestSnapshots(
+			t,
+			[...request({
+				type: RequestType.GetGuildEmojis,
+				guildID: guild.id,
+			} satisfies GetGuildEmojisRequest)],
+			guild.emojis,
+			async (original, snapshots) => {
+				const snapshot = snapshots.find(s => s.data.id === original.id);
+				assert(snapshot !== undefined, "emoji wasn't archived");
+				return {
+					expectedObject: original,
+					snapshot,
+				};
+			},
+			emoji => ({ name: emoji.name }),
+		)),
+		t.test("emoji uploaders are missing", () => {
+			assert.equal(
+				request({
+					type: RequestType.CheckForMissingEmojiUploaders,
+					guildID: guild.id,
+				}),
+				true,
+			);
+		}),
+	]);
+});
 
 request({
 	type: RequestType.UpdateEmojiUploaders,
@@ -4248,16 +4391,16 @@ await test("archiving members works", async () => {
 			nick: null,
 			pending: false,
 			roles: [],
-			user: getFakeUser(),
+			user: generateUser(),
 		};
-		const memberWith: Omit<GuildMember, "deaf" | "mute"> & Partial<GuildMember> = structuredClone(memberWithout);
+		const memberWith: GuildMemberWithOptionalVoiceFields = structuredClone(memberWithout);
 		memberWith.deaf = true;
 		memberWith.mute = false;
-		memberWith.user.id = "2000000000000001001";
+		memberWith.user.id = generateSnowflake();
 
 		function assertSnapshotsEqual(
 			snapshot: IteratorResponseFor<GetGuildMembersRequest>,
-			member: Omit<GuildMember, "deaf" | "mute"> & Partial<GuildMember>,
+			member: GuildMemberWithOptionalVoiceFields,
 		) {
 			assertEqual({
 				actual: snapshot,
@@ -4419,7 +4562,7 @@ await test("getting/setting the latest synced message ID works", async (t) => {
 
 await test("archiving reactions works", async (t) => {
 	const messageID = messages[0].data.id;
-	const newUsers = [getFakeUser(), getFakeUser(), getFakeUser()];
+	const newUsers = [generateUser(), generateUser(), generateUser()];
 	const unicodeEmoji: PartialEmoji = { id: null, name: "👨‍💻" };
 	const guildEmoji: PartialEmoji = { id: guild.emojis[0].id, name: guild.emojis[0].name };
 	const animatedGuildEmoji: PartialEmoji = { id: guild.emojis[1].id, name: guild.emojis[1].name, animated: true };
@@ -4656,6 +4799,281 @@ await test("archiving reactions works", async (t) => {
 			emoji: unicodeEmoji,
 			type: ReactionType.Normal,
 			user: newUsers[0],
+		});
+	});
+});
+
+await test("snapshots are compared correctly", async (t) => {
+	let timestamp = new Date("2025-10-23T00:00:00Z").getTime();
+
+	await t.test("message snapshots are compared correctly", async (t) => {
+		const channelID = "1367557310872031334";
+		function testMessageComparison(same: boolean, oldObject: Message, newObject: Message) {
+			assert.equal(
+				request({
+					type: RequestType.AddMessageSnapshot,
+					timing: { timestamp, realtime: true },
+					timestamp,
+					message: oldObject,
+				} satisfies AddMessageSnapshotRequest),
+				AddSnapshotResult.AddedFirstSnapshot,
+			);
+			assert.equal(
+				request({
+					type: RequestType.AddMessageSnapshot,
+					timing: { timestamp: timestamp + 1, realtime: true },
+					timestamp,
+					message: newObject,
+				} satisfies AddMessageSnapshotRequest),
+				same ?
+					AddSnapshotResult.SameAsLatest :
+					AddSnapshotResult.AddedAnotherSnapshot,
+			);
+
+			let snapshot: IteratorResponseFor<GetMessagesRequest> | undefined;
+			for (const s of request({
+				type: RequestType.GetMessages,
+				timestamp: timestamp + 1,
+				channelID,
+			} satisfies GetMessagesRequest)) {
+				if (s.data.id === oldObject.id) {
+					snapshot = s;
+					break;
+				}
+			}
+			assert(snapshot !== undefined);
+			assert(snapshot.timing !== null);
+			assert.equal(snapshot.timing.timestamp, same ? timestamp : (timestamp + 1));
+		}
+
+		function generateMessage(): Message {
+			const id = generateSnowflake();
+			return {
+				type: 0,
+				content: "hello",
+				mentions: [],
+				mention_roles: [],
+				attachments: [],
+				embeds: [],
+				timestamp: isoTimestampFromID(id),
+				edited_timestamp: null,
+				flags: 0,
+				components: [],
+				id,
+				channel_id: "1367557310872031334",
+				author: users[0],
+				pinned: true,
+				mention_everyone: false,
+				tts: false,
+			};
+		};
+
+		await t.test("the same message snapshot is not recorded", () => {
+			const message = generateMessage();
+			testMessageComparison(true, message, message);
+		});
+		await t.test("a different message snapshot is recorded", () => {
+			const oldMessage = generateMessage();
+			const newMessage = structuredClone(oldMessage);
+			newMessage.content = "hi";
+			testMessageComparison(false, oldMessage, newMessage);
+		});
+		await t.test("a message snapshot with a new unknown property is recorded", () => {
+			const oldMessage: RecursiveExtension<Message> = generateMessage();
+			const differentMessage = structuredClone(oldMessage);
+			differentMessage.unknown = null;
+			testMessageComparison(false, oldMessage, differentMessage);
+		});
+		await t.test("a message snapshot with a different unknown property order is not recorded", () => {
+			const oldMessage: RecursiveExtension<Message> = generateMessage();
+			const newMessage = structuredClone(oldMessage);
+			oldMessage.unknown0 = null;
+			oldMessage.unknown1 = null;
+			newMessage.unknown1 = null;
+			newMessage.unknown0 = null;
+			testMessageComparison(true, oldMessage, newMessage);
+		});
+		await t.test("a message snapshot with a different edited timestamp is recorded", () => {
+			const message = generateMessage();
+			const differentMessage = structuredClone(message);
+			message.edited_timestamp = "2025-11-13T00:00:00.000000+00:00";
+			differentMessage.edited_timestamp = "2025-11-13T01:00:00.000000+00:00";
+			testMessageComparison(false, message, differentMessage);
+		});
+		await t.test("a message snapshot with different attachment URLs in the embeds is not recorded", () => {
+			const id = generateSnowflake();
+			// The message content and embed objects below were obtained directly from Discord and are from the same unedited message.
+			const oldMessage: Message = {
+				type: 0,
+				content: "Embedded video from attachment\nhttps://cdn.discordapp.com/attachments/1367557310872031334/1408914540024037447/video.mp4?ex=6916ebaa&is=69159a2a&hm=6d68576998e80838a8aa8ff1bbd888034d948ec9d9a054893744a1b55b49539d&",
+				mentions: [],
+				mention_roles: [],
+				attachments: [],
+				embeds: [
+					{
+						type: "video",
+						url: "https://cdn.discordapp.com/attachments/1367557310872031334/1408914540024037447/video.mp4?ex=6916ebaa&is=69159a2a&hm=6d68576998e80838a8aa8ff1bbd888034d948ec9d9a054893744a1b55b49539d&",
+						video: {
+							url: "https://cdn.discordapp.com/attachments/1367557310872031334/1408914540024037447/video.mp4?ex=6916ebaa&is=69159a2a&hm=6d68576998e80838a8aa8ff1bbd888034d948ec9d9a054893744a1b55b49539d&",
+							proxy_url: "https://media.discordapp.net/attachments/1367557310872031334/1408914540024037447/video.mp4?ex=6916ebaa&is=69159a2a&hm=6d68576998e80838a8aa8ff1bbd888034d948ec9d9a054893744a1b55b49539d&",
+							width: 320,
+							height: 240,
+							content_type: "video/mp4",
+							placeholder: "3/cNLYZ1cIB3Z3dHaHiId4AouK+I",
+							placeholder_version: 1,
+							flags: 0,
+						},
+						content_scan_version: 2,
+					},
+				],
+				timestamp: isoTimestampFromID(id),
+				edited_timestamp: null,
+				flags: 0,
+				components: [],
+				id,
+				channel_id: "1367557310872031334",
+				author: users[0],
+				pinned: false,
+				mention_everyone: false,
+				tts: false,
+			};
+			const newMessage: Message = {
+				type: 0,
+				content: "Embedded video from attachment\nhttps://cdn.discordapp.com/attachments/1367557310872031334/1408914540024037447/video.mp4?ex=6916ebaa&is=69159a2a&hm=6d68576998e80838a8aa8ff1bbd888034d948ec9d9a054893744a1b55b49539d&",
+				mentions: [],
+				mention_roles: [],
+				attachments: [],
+				embeds: [
+					{
+						type: "video",
+						url: "https://cdn.discordapp.com/attachments/1367557310872031334/1408914540024037447/video.mp4?ex=6916ebaa&is=69159a2a&hm=6d68576998e80838a8aa8ff1bbd888034d948ec9d9a054893744a1b55b49539d&",
+						video: {
+							url: "https://cdn.discordapp.com/attachments/1367557310872031334/1408914540024037447/video.mp4?ex=6917946a&is=691642ea&hm=90929e984d3d244974b1a080f39671fff7baf513b26e2a6be772932c50ffee61&",
+							proxy_url: "https://media.discordapp.net/attachments/1367557310872031334/1408914540024037447/video.mp4?ex=6917946a&is=691642ea&hm=90929e984d3d244974b1a080f39671fff7baf513b26e2a6be772932c50ffee61&",
+							width: 320,
+							height: 240,
+							content_type: "video/mp4",
+							placeholder: "3/cNLYZ1cIB3Z3dHaHiId4AouK+I",
+							placeholder_version: 1,
+							flags: 0,
+						},
+						content_scan_version: 2,
+					},
+				],
+				timestamp: isoTimestampFromID(id),
+				edited_timestamp: null,
+				flags: 0,
+				components: [],
+				id,
+				channel_id: "1367557310872031334",
+				author: users[0],
+				pinned: false,
+				mention_everyone: false,
+				tts: false,
+			};
+			testMessageComparison(true, oldMessage, newMessage);
+		});
+	});
+
+	await t.test("guild member snapshots are compared correctly", async (t) => {
+		function testGuildMemberComparison(same: boolean, guildID: string, oldObject: GuildMemberWithOptionalVoiceFields, newObject: GuildMemberWithOptionalVoiceFields) {
+			assert.equal(
+				request({
+					type: RequestType.AddGuildMemberSnapshot,
+					timing: { timestamp, realtime: true },
+					guildID,
+					member: oldObject,
+				} satisfies AddGuildMemberSnapshotRequest),
+				AddSnapshotResult.AddedFirstSnapshot,
+			);
+			assert.equal(
+				request({
+					type: RequestType.AddGuildMemberSnapshot,
+					timing: { timestamp: timestamp + 1, realtime: true },
+					guildID,
+					member: newObject,
+				} satisfies AddGuildMemberSnapshotRequest),
+				same ?
+					AddSnapshotResult.SameAsLatest :
+					AddSnapshotResult.AddedAnotherSnapshot,
+			);
+
+			let snapshot: IteratorResponseFor<GetGuildMembersRequest> | undefined;
+			for (const s of request({
+				type: RequestType.GetGuildMembers,
+				timestamp: timestamp + 1,
+				guildID,
+			} satisfies GetGuildMembersRequest)) {
+				if (s.data.user.id === oldObject.user.id) {
+					snapshot = s;
+					break;
+				}
+			}
+			assert(snapshot !== undefined);
+			assert.equal(snapshot.timing.timestamp, same ? timestamp : (timestamp + 1));
+			timestamp += 2;
+		}
+
+		function generateGuildMember(): GuildMember {
+			return {
+				avatar: null,
+				banner: null,
+				communication_disabled_until: null,
+				deaf: false,
+				flags: 0,
+				joined_at: "2025-10-23T00:00:00.000000+00:00",
+				mute: false,
+				nick: null,
+				pending: false,
+				premium_since: null,
+				roles: [],
+				user: generateUser(),
+			};
+		}
+
+		await t.test("the same member snapshot is not recorded", () => {
+			const member = generateGuildMember();
+			testGuildMemberComparison(true, guild.id, member, member);
+		});
+		await t.test("a different member snapshot is recorded", () => {
+			const oldMember = generateGuildMember();
+			const newMember = structuredClone(oldMember);
+			newMember.flags = 1;
+			testGuildMemberComparison(false, guild.id, oldMember, newMember);
+		});
+		await t.test("a member snapshot with different a `deaf` value is recorded", () => {
+			const oldMember: GuildMember = generateGuildMember();
+			const newMember = structuredClone(oldMember);
+			newMember.deaf = true;
+			testGuildMemberComparison(false, guild.id, oldMember, newMember);
+		});
+		await t.test("a member snapshot with a `deaf` value which was previously unknown is recorded", () => {
+			const oldMember: GuildMemberWithOptionalVoiceFields = generateGuildMember();
+			delete oldMember.deaf;
+			const newMember = structuredClone(oldMember);
+			newMember.deaf = true;
+			testGuildMemberComparison(false, guild.id, oldMember, newMember);
+		});
+		await t.test("a member snapshot with an unknown `deaf` value which was previously known is not recorded", () => {
+			const oldMember: GuildMemberWithOptionalVoiceFields = generateGuildMember();
+			const newMember = structuredClone(oldMember);
+			delete newMember.deaf;
+			testGuildMemberComparison(true, guild.id, oldMember, newMember);
+		});
+		await t.test("a member snapshot with a new unknown property is recorded", () => {
+			const oldMember: RecursiveExtension<GuildMember> = generateGuildMember();
+			const newMember = structuredClone(oldMember);
+			newMember.unknown = null;
+			testGuildMemberComparison(false, guild.id, oldMember, newMember);
+		});
+		await t.test("a member snapshot with a different unknown property order is not recorded", () => {
+			const oldMember: RecursiveExtension<GuildMember> = generateGuildMember();
+			const newMember = structuredClone(oldMember);
+			oldMember.unknown0 = null;
+			oldMember.unknown1 = null;
+			newMember.unknown1 = null;
+			newMember.unknown0 = null;
+			testGuildMemberComparison(true, guild.id, oldMember, newMember);
 		});
 	});
 });
