@@ -2,13 +2,13 @@ import test, { TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { getRequestHandler, RequestHandler } from "./request-handler.js";
 import { AddGuildMemberSnapshotRequest, AddGuildMemberLeaveRequest, AddSnapshotResult, GetChannelsRequest, GetForumTagsRequest, GetGuildEmojisRequest, GetGuildMembersRequest, GetGuildsRequest, GetMessagesRequest, GetRolesRequest, GetThreadsRequest, IteratorResponseFor, MarkMessageAsDeletedRequest, RequestType, SyncGuildMembersRequest, Timing, SetLastSyncedMessageIDRequest, GetLastSyncedMessageIDRequest, AddInitialReactionsRequest, AddReactionPlacementRequest, GetReactionsHistoryRequest as GetReactionHistoryRequest, MarkReactionAsRemovedRequest, MarkReactionAsRemovedBulkRequest, AddReactionResult, AddMessageSnapshotRequest, AddSnapshotRequest } from "./types.js";
-import { Attachment, ChannelType, GatewayGuildCreateDispatchPayload, GuildMember, GuildMemberWithOptionalVoiceFields, MemberFlag, Message, PartialEmoji, PartialUser, ReactionType, User } from "../discord-api/types.js";
+import { Attachment, ChannelType, CustomEmoji, GatewayGuildCreateDispatchPayload, GuildMember, GuildMemberWithOptionalVoiceFields, MemberFlag, Message, PartialEmoji, PartialUser, ReactionType, User } from "../discord-api/types.js";
 import { parseArgs } from "node:util";
 import { unlinkSync } from "node:fs";
 import { Logger } from "../util/log.js";
 import { snowflakeToTimestamp } from "../discord-api/snowflake.js";
 
-function isoTimestampFromID(id: string | bigint) {
+function snowflakeToIsoTimestamp(id: string | bigint) {
 	return new Date(Number(snowflakeToTimestamp(BigInt(id)))).toISOString();
 }
 
@@ -35,6 +35,43 @@ function generateUser(): PartialUser {
 	};
 	return user;
 }
+function generateGuildMember(): GuildMember {
+	return {
+		avatar: null,
+		banner: null,
+		communication_disabled_until: null,
+		deaf: false,
+		flags: 0,
+		joined_at: "2025-10-23T00:00:00.000000+00:00",
+		mute: false,
+		nick: null,
+		pending: false,
+		premium_since: null,
+		roles: [],
+		user: generateUser(),
+	};
+}
+function generateMessage(): Message {
+	const id = generateSnowflake();
+	return {
+		type: 0,
+		content: "hello",
+		mentions: [],
+		mention_roles: [],
+		attachments: [],
+		embeds: [],
+		timestamp: snowflakeToIsoTimestamp(id),
+		edited_timestamp: null,
+		flags: 0,
+		components: [],
+		id,
+		channel_id: "1367557310872031334",
+		author: users[0],
+		pinned: true,
+		mention_everyone: false,
+		tts: false,
+	};
+};
 
 type RecursiveExtension<T> =
 	T extends (infer ArrayMemberType)[] ? RecursiveExtension<ArrayMemberType>[] :
@@ -2808,7 +2845,7 @@ const messages: MessageEntry[] = [
 				mention_roles: [],
 				attachments: [],
 				embeds: [],
-				timestamp: isoTimestampFromID(id),
+				timestamp: snowflakeToIsoTimestamp(id),
 				edited_timestamp: null,
 				flags: 0,
 				components: [],
@@ -2866,7 +2903,7 @@ const messages: MessageEntry[] = [
 				mention_roles: [],
 				attachments: [],
 				embeds: [],
-				timestamp: isoTimestampFromID(id),
+				timestamp: snowflakeToIsoTimestamp(id),
 				edited_timestamp: "2025-05-01T18:26:17.333000+00:00",
 				flags: 0,
 				components: [],
@@ -4383,7 +4420,7 @@ await test("archiving members works", async () => {
 			timestamp: new Date("2025-09-17T02:00:00Z").getTime(),
 			realtime: true,
 		};
-		const member = guildMembers.find(e => e.data.user.id === guildMembers[2].data.user.id)!.data;
+		const member = guildMembers[2].data;
 
 		assert.equal(
 			request({
@@ -4434,7 +4471,7 @@ await test("archiving members works", async () => {
 		const memberWith: GuildMemberWithOptionalVoiceFields = structuredClone(memberWithout);
 		memberWith.deaf = true;
 		memberWith.mute = false;
-		memberWith.user.id = generateSnowflake();
+		memberWith.user = generateUser();
 
 		function assertSnapshotsEqual(
 			snapshot: IteratorResponseFor<GetGuildMembersRequest>,
@@ -4884,28 +4921,6 @@ await test("snapshots are compared correctly", async (t) => {
 			assert.equal(snapshot.timing.timestamp, same ? timestamp : (timestamp + 1));
 		}
 
-		function generateMessage(): Message {
-			const id = generateSnowflake();
-			return {
-				type: 0,
-				content: "hello",
-				mentions: [],
-				mention_roles: [],
-				attachments: [],
-				embeds: [],
-				timestamp: isoTimestampFromID(id),
-				edited_timestamp: null,
-				flags: 0,
-				components: [],
-				id,
-				channel_id: "1367557310872031334",
-				author: users[0],
-				pinned: true,
-				mention_everyone: false,
-				tts: false,
-			};
-		};
-
 		await t.test("the same message snapshot is not recorded", () => {
 			const message = generateMessage();
 			testMessageComparison(true, message, message);
@@ -4918,9 +4933,9 @@ await test("snapshots are compared correctly", async (t) => {
 		});
 		await t.test("a message snapshot with a new unknown property is recorded", () => {
 			const oldMessage: RecursiveExtension<Message> = generateMessage();
-			const differentMessage = structuredClone(oldMessage);
-			differentMessage.unknown = null;
-			testMessageComparison(false, oldMessage, differentMessage);
+			const newMessage = structuredClone(oldMessage);
+			newMessage.unknown = null;
+			testMessageComparison(false, oldMessage, newMessage);
 		});
 		await t.test("a message snapshot with a different unknown property order is not recorded", () => {
 			const oldMessage: RecursiveExtension<Message> = generateMessage();
@@ -4932,11 +4947,11 @@ await test("snapshots are compared correctly", async (t) => {
 			testMessageComparison(true, oldMessage, newMessage);
 		});
 		await t.test("a message snapshot with a different edited timestamp is recorded", () => {
-			const message = generateMessage();
-			const differentMessage = structuredClone(message);
-			message.edited_timestamp = "2025-11-13T00:00:00.000000+00:00";
-			differentMessage.edited_timestamp = "2025-11-13T01:00:00.000000+00:00";
-			testMessageComparison(false, message, differentMessage);
+			const oldMessage = generateMessage();
+			const newMessage = structuredClone(oldMessage);
+			oldMessage.edited_timestamp = "2025-11-13T00:00:00.000000+00:00";
+			newMessage.edited_timestamp = "2025-11-13T01:00:00.000000+00:00";
+			testMessageComparison(false, oldMessage, newMessage);
 		});
 		await t.test("a message snapshot with different attachment URLs in the embeds is not recorded", () => {
 			const id = generateSnowflake();
@@ -4964,7 +4979,7 @@ await test("snapshots are compared correctly", async (t) => {
 						content_scan_version: 2,
 					},
 				],
-				timestamp: isoTimestampFromID(id),
+				timestamp: snowflakeToIsoTimestamp(id),
 				edited_timestamp: null,
 				flags: 0,
 				components: [],
@@ -4998,7 +5013,7 @@ await test("snapshots are compared correctly", async (t) => {
 						content_scan_version: 2,
 					},
 				],
-				timestamp: isoTimestampFromID(id),
+				timestamp: snowflakeToIsoTimestamp(id),
 				edited_timestamp: null,
 				flags: 0,
 				components: [],
@@ -5052,23 +5067,6 @@ await test("snapshots are compared correctly", async (t) => {
 			timestamp += 2;
 		}
 
-		function generateGuildMember(): GuildMember {
-			return {
-				avatar: null,
-				banner: null,
-				communication_disabled_until: null,
-				deaf: false,
-				flags: 0,
-				joined_at: "2025-10-23T00:00:00.000000+00:00",
-				mute: false,
-				nick: null,
-				pending: false,
-				premium_since: null,
-				roles: [],
-				user: generateUser(),
-			};
-		}
-
 		await t.test("the same member snapshot is not recorded", () => {
 			const member = generateGuildMember();
 			testGuildMemberComparison(true, guild.id, member, member);
@@ -5113,6 +5111,122 @@ await test("snapshots are compared correctly", async (t) => {
 			newMember.unknown0 = null;
 			testGuildMemberComparison(true, guild.id, oldMember, newMember);
 		});
+	});
+});
+
+await test("snapshots are verified correctly", async (t) => {
+	let timestamp = new Date("2025-10-28T00:00:00Z").getTime();
+
+	await t.test("attempting to modify an immutable field of a message throws", () => {
+		const oldMessage = generateMessage();
+		assert.equal(request({
+			type: RequestType.AddMessageSnapshot,
+			timing: { timestamp, realtime: false },
+			timestamp,
+			message: oldMessage,
+		}), AddSnapshotResult.AddedFirstSnapshot);
+		timestamp++;
+
+		const newMessage = structuredClone(oldMessage);
+		newMessage.tts = true;
+		assert.throws(() => {
+			request({
+				type: RequestType.AddMessageSnapshot,
+				timing: { timestamp, realtime: false },
+				timestamp,
+				message: newMessage,
+			});
+		}, new Error("The field \"tts\" of a \"message\" object, assumed to be immutable, has a different value than the one stored in the database."));
+		timestamp++;
+	});
+
+	await t.test("attempting to modify an immutable field of a guild emoji throws", () => {
+		const oldEmoji: CustomEmoji = {
+			id: generateSnowflake(),
+			name: "fake",
+		};
+		assert.equal(request({
+			type: RequestType.AddGuildEmojiSnapshot,
+			timing: { timestamp, realtime: false },
+			emoji: oldEmoji,
+			guildID: guild.id,
+		}), AddSnapshotResult.AddedFirstSnapshot);
+		timestamp++;
+
+		const newEmoji = structuredClone(oldEmoji);
+		newEmoji.animated = true;
+		assert.throws(() => {
+			request({
+				type: RequestType.AddGuildEmojiSnapshot,
+				timing: { timestamp, realtime: false },
+				emoji: newEmoji,
+				guildID: guild.id,
+			});
+		}, new Error("The field \"animated\" of a \"guild_emoji\" object, assumed to be immutable, has a different value than the one stored in the database."));
+		timestamp++;
+	});
+
+	await t.test("attempting to modify a guild emoji's uploader's ID throws", () => {
+		const oldEmoji: CustomEmoji = {
+			id: generateSnowflake(),
+			name: "fake",
+			user: users[0],
+		};
+		assert.equal(request({
+			type: RequestType.AddGuildEmojiSnapshot,
+			timing: { timestamp, realtime: false },
+			emoji: oldEmoji,
+			guildID: guild.id,
+		}), AddSnapshotResult.AddedFirstSnapshot);
+		timestamp++;
+
+		const newEmoji = structuredClone(oldEmoji);
+		newEmoji.user = users[1];
+		assert.throws(() => {
+			request({
+				type: RequestType.AddGuildEmojiSnapshot,
+				timing: { timestamp, realtime: false },
+				emoji: newEmoji,
+				guildID: guild.id,
+			});
+		}, new Error("The ID of the guild emoji's uploader is different from the one stored in the database."));
+		timestamp++;
+	});
+
+	await t.test("archiving a snapshot of a guild emoji with the uploader ID already set works", () => {
+		const emojiWithUploader: CustomEmoji = {
+			id: generateSnowflake(),
+			name: "fake",
+			user: users[0],
+		};
+		assert.equal(request({
+			type: RequestType.AddGuildEmojiSnapshot,
+			timing: { timestamp, realtime: false },
+			emoji: emojiWithUploader,
+			guildID: guild.id,
+		}), AddSnapshotResult.AddedFirstSnapshot);
+		timestamp++;
+
+		const emojiWithoutUploader0 = structuredClone(emojiWithUploader);
+		delete emojiWithoutUploader0.user;
+		assert.equal(request({
+			type: RequestType.AddGuildEmojiSnapshot,
+			timing: { timestamp, realtime: false },
+			emoji: emojiWithoutUploader0,
+			guildID: guild.id,
+		}), AddSnapshotResult.SameAsLatest);
+		timestamp++;
+
+		const emojiWithoutUploader1 = structuredClone(emojiWithUploader);
+		delete emojiWithoutUploader1.user;
+		emojiWithoutUploader1.name = "new_name";
+		assert.equal(request({
+			type: RequestType.AddGuildEmojiSnapshot,
+			timing: { timestamp, realtime: false },
+			emoji: emojiWithoutUploader1,
+			guildID: guild.id,
+		}), AddSnapshotResult.AddedAnotherSnapshot);
+		timestamp++;
 	});
 });
 

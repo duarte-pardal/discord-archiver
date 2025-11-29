@@ -41,9 +41,6 @@ await (async function main() {
 			stats: {
 				type: "string",
 			},
-			"sync-sqlite": {
-				type: "boolean",
-			},
 			"file-store": {
 				type: "string",
 			},
@@ -56,6 +53,14 @@ await (async function main() {
 				short: "c",
 			},
 			config: {
+				type: "string",
+			},
+
+			// Undocumented debug options
+			"sync-sqlite": {
+				type: "boolean",
+			},
+			"message-request-limit": {
 				type: "string",
 			},
 		},
@@ -91,7 +96,6 @@ await (async function main() {
 		}
 
 		if (args.config !== undefined && args["config-file"] !== undefined) {
-			// Both `config` and `config-file` specified
 			throw undefined;
 		} else if (args.config !== undefined) {
 			json5Config = args.config;
@@ -114,10 +118,12 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 			throw err;
 		}
 
-		console.error(`Configuration error at ${err.errors[0].path.join(".")}: ${err.errors[0].message}`);
+		console.error(`Error in the config file at ${err.errors[0].path.join(".")}: ${err.errors[0].message}`);
 		return;
 	}
 	log.debug?.("Parsed config: %o", config);
+
+	const messageRequestLimit = args["message-request-limit"] === undefined ? 100 : Number.parseInt(args["message-request-limit"]);
 
 	const globalAbortController = new AbortController();
 	const globalAbortSignal = globalAbortController.signal;
@@ -323,6 +329,8 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 	// TODO: Performance can be improved by not waiting for downloads from the previous chunk to
 	// finish before starting the chunk downloads.
 	async function syncMessages(account: Account, channel: CachedTextLikeChannel | CachedThread): Promise<void> {
+		if (account.disconnected) return;
+
 		const abortController = new AbortController();
 		const restOptions: RestOptions = {
 			fetchOptions: mergeOptions(account.fetchOptions, { signal: abortController.signal }),
@@ -374,7 +382,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 			let previousIterationPromise: Promise<void> | undefined;
 
 			while (true) {
-				const { response, data } = await account.request<DT.Message[]>(`/channels/${channel.id}/messages?limit=100&after=${messageID}`, restOptions);
+				const { response, data } = await account.request<DT.Message[]>(`/channels/${channel.id}/messages?limit=${messageRequestLimit}&after=${messageID}`, restOptions);
 				if (abortController.signal.aborted) throw abortError;
 				if (!response.ok) {
 					log.warning?.(`Stopped syncing messages from #${channel.name} (${channel.id}) using ${account.name} because we got a ${response.status} ${response.statusText} response.`);
@@ -457,7 +465,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 					}
 
 					const lastSyncedMessageID =
-						messages.length >= 100 ?
+						messages.length >= messageRequestLimit ?
 							// We have not reached the end.
 							lastStoredMessageID :
 							// We have reached the end.
@@ -479,7 +487,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 				})();
 				previousIterationPromise.catch(() => {});
 
-				if (messages.length < 100) {
+				if (messages.length < messageRequestLimit) {
 					// We've reached the end.
 					await previousIterationPromise;
 					log.verbose?.(`Finished syncing messages from #${channel.name} (${channel.id}) using ${account.name}.`);
@@ -513,6 +521,8 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 		JoinedPrivate,
 	}
 	async function syncArchivedThreads(account: Account, channel: CachedTextLikeChannel, type: ArchivedThreadListType) {
+		if (account.disconnected) return;
+
 		const abortController = new AbortController();
 		const restOptions: RestOptions = {
 			fetchOptions: mergeOptions(account.fetchOptions, { signal: abortController.signal }),
@@ -603,6 +613,8 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 	}
 
 	async function requestExpressionUploaders(account: Account, guild: CachedGuild) {
+		if (account.disconnected) return;
+
 		const abortController = new AbortController();
 		const restOptions: RestOptions = {
 			fetchOptions: mergeOptions(account.fetchOptions, { signal: abortController.signal }),
@@ -1041,6 +1053,10 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 			}
 
 			gatewayConnection.addListener("dispatch", async (payload: DT.GatewayDispatchPayload, realtime: boolean) => {
+				// The gateway connection is not supposed to emit this event after being destroyed but
+				// it doesn't hurt to check.
+				if (account.disconnected) return;
+
 				const timestamp = Date.now();
 				const timing = {
 					timestamp,
@@ -1418,7 +1434,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 
 							if (cachedGuild.options.storeMemberEvents) {
 								await cachedGuild.initialSyncPromise;
-								archiveMemberSnapshots(cachedGuild, [member], timing, abortController.signal);
+								await archiveMemberSnapshots(cachedGuild, [member], timing, abortController.signal);
 							}
 							break;
 						}
@@ -1666,7 +1682,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 									);
 								} catch (err) {
 									if (err instanceof ExpectedError) {
-										console.warn(`Couldn't archive a new or newly edited message. This may be due to losing the ability to access the message (for example, if it was deleted). Error: ${err.toString()}`);
+										console.warn(`Couldn't archive a ${payload.t === "MESSAGE_CREATE" ? "new" : "newly edited"} message. This may be due to losing the ability to access the message (for example, if it was deleted). Error: ${err.toString()}`);
 									} else {
 										throw err;
 									}
@@ -1862,7 +1878,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 			const restManager = new RestManager();
 			async function request<T>(endpoint: string, options: RestOptions): Promise<RequestResult<T>> {
 				const result = await restManager.request<T>(endpoint, options);
-				if (result.response.status === 401 && accounts.has(account)) {
+				if (result.response.status === 401 && !account.disconnected) {
 					log.error?.(`Got HTTP status 401 Unauthorized while using ${account.name}. The authentication token is invalid. This account will be disconnected.`);
 					// This will immediately abort all operations
 					account.disconnect();
@@ -1874,9 +1890,10 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 			}
 
 			async function disconnect() {
-				if (!accounts.has(account))
+				if (account.disconnected)
 					throw new Error("The account was already disconnected");
 
+				account.disconnected = true;
 				accounts.delete(account);
 
 				account.gatewayConnection.destroy();
@@ -1914,6 +1931,7 @@ Usage: node index.js (-d | --database) <database file path> ((-c | --config-file
 				request,
 
 				disconnect,
+				disconnected: false,
 
 				numberOfOngoingRESTOperations: 0,
 				numberOfOngoingGatewayOperations: 0,

@@ -62,7 +62,7 @@ export function updateProgressOutput(): void {
 	// Debounce updates
 	const now = Date.now();
 	if (updateTimer !== null) return;
-	if (nextUpdateTimestamp !== null && now - nextUpdateTimestamp < 0) {
+	if (nextUpdateTimestamp !== null && now < nextUpdateTimestamp) {
 		updateTimer = setTimeout(() => {
 			updateTimer = null;
 			updateProgressOutput();
@@ -120,6 +120,10 @@ export function updateProgressOutput(): void {
 				sync.channel.lastSyncedMessageID === undefined || sync.channel.lastSyncedMessageID === 0n ?
 					"" :
 					"  " + dateToLocalTimestamp(new Date(Number(snowflakeToTimestamp(sync.channel.lastSyncedMessageID))))
+			) + (
+				accounts.size === 1 && accounts.has(sync.account) ?
+					"" :
+					"  " + sync.account.name
 			)
 		)),
 		dispatchHandlings.map(op => `Handling ${op.eventName} dispatch from ${op.account.name}.`),

@@ -70,6 +70,8 @@ export type Account = AccountOptions & {
 	request<T>(endpoint: string, options: RestOptions): Promise<RequestResult<T>>;
 
 	disconnect: () => Promise<void>;
+	/** This must be checked before starting a new operation. */
+	disconnected: boolean;
 
 	numberOfOngoingRESTOperations: number;
 	numberOfOngoingGatewayOperations: number;

@@ -1,7 +1,7 @@
 /**
  * @fileoverview Handles the operations in the conversion from objects in the Discord API format to the database format and back that are common to all object types.
  *
- * Most of the conversion work is done here, with some operations specific to each object type being handled in `worker.ts`.
+ * Most of the conversion work is done here, with some operations specific to each object type being handled in `request-handler.ts`.
  */
 
 import * as DT from "../discord-api/types.js";
@@ -12,7 +12,7 @@ export enum ObjectType {
 	User,
 	Guild,
 	Role,
-	Member,
+	GuildMember,
 	Channel,
 	Thread,
 	Message,
@@ -25,7 +25,7 @@ type InputObjectType = {
 	[ObjectType.User]: DT.PartialUser | DT.PartialUserWithMemberField | DT.User;
 	[ObjectType.Guild]: DT.Guild | DT.GatewayGuildCreateDispatchPayload["d"] | DT.GatewayGuildUpdateDispatchPayload["d"];
 	[ObjectType.Role]: DT.Role;
-	[ObjectType.Member]: DT.GuildMember | DT.GatewayGuildMemberAddDispatchPayload["d"];
+	[ObjectType.GuildMember]: DT.GuildMember | DT.GatewayGuildMemberAddDispatchPayload["d"];
 	[ObjectType.Channel]: DT.DirectChannel | DT.GuildChannel | DT.GatewayChannelCreateDispatchPayload["d"];
 	[ObjectType.Thread]: DT.Thread;
 	[ObjectType.Message]: DT.Message | DT.GatewayMessageCreateDispatchPayload["d"];
@@ -241,7 +241,7 @@ const schemas: { [OT in ObjectType]: Schema<InputObjectType[OT]> } = {
 
 		["version" as KeyOfObject<ObjectType.Role>, "ignore"], // not archived
 	],
-	[ObjectType.Member]: [
+	[ObjectType.GuildMember]: [
 		["user", "ignore"], // archived separately
 		["nick", ValueType.String, NullValue.Null],
 		["avatar", ValueType.ImageHash, NullValue.Null],
@@ -419,13 +419,13 @@ const schemas: { [OT in ObjectType]: Schema<InputObjectType[OT]> } = {
 		["content_type", ValueType.String, NullValue.Absent],
 		["original_content_type", ValueType.String, NullValue.Absent],
 		["size", ValueType.Integer],
-		["url", "ignore"], // not archived
-		["proxy_url", "ignore"], // not archived
+		["url", "ignore"], // not archived (can be computed, except for the signature)
+		["proxy_url", "ignore"], // not archived (irrelevant)
 		["height", ValueType.Integer, NullValue.Absent],
 		["width", ValueType.Integer, NullValue.Absent],
-		["content_scan_version", "ignore"], // not archived
-		["placeholder_version", "ignore"], // not archived
-		["placeholder", "ignore"], // not archived
+		["content_scan_version", "ignore"], // not archived (irrelevant)
+		["placeholder_version", "ignore"], // not archived (irrelevant if the file is archived)
+		["placeholder", "ignore"], // not archived (irrelevant if the file is archived)
 		["ephemeral", ValueType.StrictBoolean],
 		["duration_secs", ValueType.Float, NullValue.Absent],
 		["waveform", ValueType.Base64, NullValue.Absent],
@@ -451,7 +451,8 @@ const schemas: { [OT in ObjectType]: Schema<InputObjectType[OT]> } = {
 		["animated", ValueType.StrictBoolean],
 
 		["name", ValueType.String],
-		["roles", ValueType.BigIntegerArray],
+		["roles", ValueType.BigIntegerArray, NullValue.Absent],
+		["user", "ignore"], // archived separately
 
 		["available", "ignore"],
 

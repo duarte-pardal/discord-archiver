@@ -256,6 +256,7 @@ export type UpdateEmojiUploadersRequest = {
 	type: RequestType.UpdateEmojiUploaders;
 	emojis: {
 		id: string;
+		/** The referenced user must be in the database. */
 		user__id: string;
 	}[];
 };
@@ -421,7 +422,7 @@ export type IteratorResponseFor<R extends IteratorRequest> =
 	R extends GetChannelsRequest ? ObjectSnapshotResponse<Omit<DT.DirectChannel | DT.GuildChannel, "available_tags">> :
 	R extends GetThreadsRequest ? ObjectSnapshotResponse<DT.Thread> :
 	R extends GetForumTagsRequest ? ObjectSnapshotResponse<DT.ForumTag> :
-	R extends GetMessagesRequest ? ObjectSnapshotResponse<DT.Message> :
+	R extends GetMessagesRequest ? ObjectSnapshotResponse<DT.Message & { attachments: Omit<DT.Attachment, "url" | "proxy_url"> }> :
 	R extends GetReactionsHistoryRequest ? {
 		start: Timing;
 		end: Timing | null;

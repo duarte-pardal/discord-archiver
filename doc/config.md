@@ -190,9 +190,9 @@ Controls whether to download and store messages already sent. Messages are reque
 
 #### `requestArchivedThreads` (boolean)
 
-Controls whether to download and store archived threads. Archived threads are requested from newest to oldest.
+Controls whether to download and store closed threads. Archived threads are requested from newest to oldest.
 
-Messages inside archived threads will also be downloaded and stored, depending on the value of the `requestPastMessages` option.
+If this option is set to `true`, messages inside closed threads will also be downloaded and stored, depending on the value of the `requestPastMessages` option. If this option is set to `false`, the messages inside threads that were closed when the guild information was obtained (i.e. at startup) will *not* be archived, regardless of the value of the `requestPastMessages` option, even if the archiver has begun archiving messages from such threads while they were opened. The archiver does not enumerate closed threads in the database, it only requests them from Discord.
 
 
 ### Server options
